@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="跑團月曆，瀏覽近期團務、申請加團，管理員可登入開團。"
+    />
+    <title>高雄跑團月曆</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%97%93%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/config.js"></script>
+    <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <main class="player-availability-page" id="playerAvailabilityPage" hidden></main>
+
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <button class="icon-button menu-toggle" id="menuToggle" type="button" aria-label="切換側欄">
+            <i data-lucide="menu"></i>
+          </button>
+          <div class="brand-mark" aria-hidden="true">KH</div>
+          <div>
+            <p class="eyebrow">TRPG在高雄</p>
+            <h1>跑團月曆</h1>
+          </div>
+        </div>
+
+        <div class="calendar-nav" aria-label="日曆月份導覽">
+          <button class="icon-button" id="prevPeriod" type="button" aria-label="上一段時間">
+            <i data-lucide="chevron-left"></i>
+          </button>
+          <button class="today-button" id="todayButton" type="button">今天</button>
+          <button class="icon-button" id="nextPeriod" type="button" aria-label="下一段時間">
+            <i data-lucide="chevron-right"></i>
+          </button>
+          <h2 id="periodLabel">載入中</h2>
+          <label class="agenda-month-toggle" id="agendaMonthToggle" hidden>
+            <input id="agendaCurrentMonthOnly" type="checkbox" checked />
+            <span>顯示本月</span>
+          </label>
+        </div>
+
+        <div class="header-view-switch view-switch" role="tablist" aria-label="檢視切換">
+            <button class="segmented active" id="monthView" type="button" data-view="month" role="tab">月份</button>
+            <button class="segmented" id="agendaView" type="button" data-view="agenda" role="tab">列表</button>
+          </div>
+
+        <div class="top-actions">
+          <button class="primary-button admin-only" id="newEventButton" type="button">
+            <i data-lucide="plus"></i>
+            <span>開團</span>
+          </button>
+          <button class="ghost-button session-only" id="changePasswordButton" type="button">
+            <i data-lucide="key-round"></i>
+            <span>修改密碼</span>
+          </button>
+          <button class="ghost-button" id="loginButton" type="button">
+            <i data-lucide="log-in"></i>
+            <span>管理登入</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="main-layout">
+        <aside class="sidebar" id="sidebar">
+          <section class="mini-panel">
+            <div class="mini-panel-header">
+              <button class="icon-button compact" id="miniPrev" type="button" aria-label="上個月">
+                <i data-lucide="chevron-left"></i>
+              </button>
+              <strong id="miniLabel">月份</strong>
+              <button class="icon-button compact" id="miniNext" type="button" aria-label="下個月">
+                <i data-lucide="chevron-right"></i>
+              </button>
+            </div>
+            <div class="mini-weekdays" aria-hidden="true">
+              <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+            </div>
+            <div class="mini-calendar" id="miniCalendar"></div>
+          </section>
+
+          <section class="filters-panel">
+            <div class="section-heading">
+              <i data-lucide="filter"></i>
+              <h2>篩選</h2>
+            </div>
+            <label class="field-label" for="systemFilter">系統</label>
+            <select id="systemFilter">
+              <option value="">全部系統</option>
+            </select>
+            <label class="field-label" for="gmFilter">GM</label>
+            <select id="gmFilter">
+              <option value="">全部 GM</option>
+            </select>
+            <label class="field-label admin-only" for="availabilityEventFilter">約時間</label>
+            <select id="availabilityEventFilter" class="admin-only" disabled>
+              <option value="">請先選擇GM</option>
+            </select>
+            <label class="toggle-row">
+              <input type="checkbox" id="openSeatsOnly" />
+              <span>只看可報名</span>
+            </label>
+          </section>
+
+          <section class="filters-panel admin-only">
+            <div class="section-heading">
+              <i data-lucide="inbox"></i>
+              <h2>待處理申請</h2>
+            </div>
+            <div class="request-list" id="requestList"></div>
+          </section>
+        </aside>
+
+        <section class="calendar-surface" aria-live="polite">
+          <div class="status-strip" id="statusStrip" hidden></div>
+          <div class="weekdays desktop-weekdays" aria-hidden="true">
+            <span>週日</span>
+            <span>週一</span>
+            <span>週二</span>
+            <span>週三</span>
+            <span>週四</span>
+            <span>週五</span>
+            <span>週六</span>
+          </div>
+          <div class="calendar-grid" id="calendarGrid"></div>
+          <div class="agenda-list" id="agendaList" hidden></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="modal" id="eventDialog">
+      <form class="modal-card event-form" id="eventForm">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">團務資料</p>
+            <div class="event-title-row">
+              <h2 id="eventFormTitle">開團</h2>
+              <div class="event-mode-toggles">
+                <label class="mode-toggle">
+                  <input id="eventDateUndecided" type="checkbox" />
+                  <span>日期未定</span>
+                </label>
+                <label class="mode-toggle">
+                  <input id="eventHidden" type="checkbox" />
+                  <span>本團隱藏</span>
+                </label>
+                <label class="mode-toggle">
+                  <input id="eventRegistrationClosed" type="checkbox" />
+                  <span>關閉報名</span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="eventDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <input type="hidden" id="eventId" />
+        <div class="form-grid">
+          <label>
+            <span>日期</span>
+            <input id="eventDate" type="date" required />
+          </label>
+          <label>
+            <span>開始時間</span>
+            <input id="eventStartTime" type="time" />
+          </label>
+          <label>
+            <span>結束時間</span>
+            <input id="eventEndTime" type="time" />
+          </label>
+          <label>
+            <span>人數</span>
+            <input id="eventSeats" type="number" min="1" max="20" required />
+          </label>
+          <label class="wide">
+            <span>團名</span>
+            <input id="eventTitle" type="text" maxlength="80" required />
+          </label>
+          <label>
+            <span>主持人</span>
+            <input id="eventHost" type="text" maxlength="40" required />
+          </label>
+          <div class="form-field">
+            <div class="form-label-row">
+              <span id="eventSystemLabel">系統</span>
+              <label class="common-system-toggle">
+                <input id="eventCommonSystem" type="checkbox" checked />
+                <span>常見系統</span>
+              </label>
+            </div>
+            <input id="eventSystem" type="text" maxlength="40" aria-labelledby="eventSystemLabel" required />
+            <select id="eventSystemPreset" aria-labelledby="eventSystemLabel" required>
+              <option value="">請選擇系統</option>
+              <option value="龍與地下城 D&amp;D">龍與地下城 D&amp;D</option>
+              <option value="克蘇魯的呼喚 CoC">克蘇魯的呼喚 CoC</option>
+              <option value="探索者協會 PF">探索者協會 PF</option>
+            </select>
+          </div>
+          <label>
+            <span>劇本</span>
+            <input id="eventScenario" type="text" maxlength="80" />
+          </label>
+          <label>
+            <span>地點</span>
+            <input id="eventLocation" type="text" maxlength="120" placeholder="可寫網團" required />
+          </label>
+          <label class="wide">
+            <span>Google Map 連結</span>
+            <input id="eventMapUrl" type="url" placeholder="https://maps.google.com/..." />
+          </label>
+          <label class="wide">
+            <span>Line 群組加入連結</span>
+            <input id="eventLineUrl" type="url" placeholder="https://line.me/..." />
+          </label>
+          <label class="wide full">
+            <span>簡介</span>
+            <textarea id="eventDescription" rows="5" maxlength="1000"></textarea>
+          </label>
+          <label class="wide full">
+            <span>GM小筆記</span>
+            <textarea id="eventGmNotes" rows="4" maxlength="2000"></textarea>
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="danger-button" id="deleteEventButton" type="button">
+            <i data-lucide="trash-2"></i>
+            <span>刪除</span>
+          </button>
+          <span class="spacer"></span>
+          <button class="ghost-button" type="button" data-close-dialog="eventDialog">取消</button>
+          <button class="primary-button" type="submit">
+            <i data-lucide="save"></i>
+            <span>儲存</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="detailDialog">
+      <article class="modal-card detail-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow" id="detailMeta">團務</p>
+            <h2 id="detailTitle">團名</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="detailDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <div class="detail-layout">
+          <section class="detail-main">
+            <dl class="detail-list">
+              <div>
+                <dt><i data-lucide="calendar-days"></i>日期時間</dt>
+                <dd id="detailWhen"></dd>
+              </div>
+              <div>
+                <dt><i data-lucide="map-pin"></i>地點</dt>
+                <dd id="detailWhere"></dd>
+              </div>
+              <div>
+                <dt><i data-lucide="user-round"></i>主持人</dt>
+                <dd id="detailHost"></dd>
+              </div>
+              <div id="detailOwnerRow">
+                <dt><i data-lucide="shield-check"></i>開團帳號</dt>
+                <dd id="detailOwner"></dd>
+              </div>
+              <div>
+                <dt><i data-lucide="book-open"></i>系統 / 劇本</dt>
+                <dd id="detailSystem"></dd>
+              </div>
+              <div>
+                <dt><i data-lucide="users-round"></i>人數</dt>
+                <dd id="detailSeats"></dd>
+              </div>
+            </dl>
+            <p class="description" id="detailDescription"></p>
+            <section class="gm-notes-panel admin-only" id="detailGmNotesPanel" hidden>
+              <div class="section-heading">
+                <i data-lucide="notebook-pen"></i>
+                <h3>GM小筆記</h3>
+              </div>
+              <p class="description" id="detailGmNotes"></p>
+            </section>
+            <section class="availability-panel admin-only" id="availabilityPanel" hidden>
+              <div class="section-heading">
+                <i data-lucide="calendar-clock"></i>
+                <h3>可跑團時間調查</h3>
+              </div>
+              <div id="availabilityPanelContent"></div>
+            </section>
+            <div class="detail-actions">
+              <a class="primary-button link-button" id="detailLineLink" target="_blank" rel="noreferrer">
+                <i data-lucide="message-circle"></i>
+                <span>加入 Line 群組</span>
+              </a>
+              <button class="ghost-button admin-only" id="editEventButton" type="button">
+                <i data-lucide="pencil"></i>
+                <span>編輯</span>
+              </button>
+            </div>
+          </section>
+
+          <aside class="apply-panel">
+            <form id="applyForm">
+              <h3>申請加團</h3>
+              <label>
+                <span>稱呼</span>
+                <input id="applicantName" type="text" maxlength="40" required />
+              </label>
+              <label>
+                <span>聯絡方式</span>
+                <input id="applicantContact" type="text" maxlength="120" placeholder="Line ID / E-MAIL / 手機" required />
+              </label>
+              <label>
+                <span>人數</span>
+                <input id="applicantPlayers" type="number" min="1" max="6" value="1" required />
+              </label>
+              <label>
+                <span>備註</span>
+                <textarea id="applicantNote" rows="4" maxlength="500"></textarea>
+              </label>
+              <button class="primary-button full-width" id="applySubmitButton" type="submit">
+                <i data-lucide="send"></i>
+                <span>送出申請</span>
+              </button>
+            </form>
+
+            <div class="admin-requests admin-only" id="detailRequestsPanel">
+              <h3>申請名單</h3>
+              <div id="detailRequests"></div>
+            </div>
+          </aside>
+        </div>
+      </article>
+    </dialog>
+
+    <dialog class="modal" id="applyFeedbackDialog">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">申請狀態</p>
+            <h2>已收到你的申請</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="applyFeedbackDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <p class="muted">我們已收到你的申請，請等待主辦方審核通知。</p>
+        <div class="modal-actions">
+          <span class="spacer"></span>
+          <button class="primary-button" type="button" data-close-dialog="applyFeedbackDialog">我知道了</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="loginDialog">
+      <form class="modal-card login-form" id="loginForm" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Supabase Auth</p>
+            <h2>管理登入</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="loginDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <label>
+          <span>Email</span>
+          <input id="loginEmail" type="email" autocomplete="username" required />
+        </label>
+        <label>
+          <span>密碼</span>
+          <input id="loginPassword" type="password" autocomplete="current-password" required />
+        </label>
+        <p class="form-message" id="loginMessage"></p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="loginDialog">取消</button>
+          <button class="primary-button" type="submit">
+            <i data-lucide="log-in"></i>
+            <span>登入</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+
+    <dialog class="modal" id="passwordDialog">
+      <form class="modal-card login-form" id="passwordForm" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">帳號安全</p>
+            <h2>修改登入密碼</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="passwordDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <label>
+          <span>新密碼</span>
+          <input id="newPassword" type="password" autocomplete="new-password" required />
+        </label>
+        <label>
+          <span>確認新密碼</span>
+          <input id="confirmPassword" type="password" autocomplete="new-password" required />
+        </label>
+        <p class="form-message" id="passwordMessage"></p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="passwordDialog">取消</button>
+          <button class="primary-button" type="submit">
+            <i data-lucide="save"></i>
+            <span>更新密碼</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="emptyStateTemplate">
+      <div class="empty-state">
+        <i data-lucide="calendar-x"></i>
+        <p>目前沒有符合條件的團務。</p>
+      </div>
+    </template>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "trpg-kaohsiung-calendar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs",
+    "build": "node scripts/build-config.mjs",
+    "check": "node scripts/check.mjs"
+  }
+}
