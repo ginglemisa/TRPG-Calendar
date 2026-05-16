@@ -381,6 +381,65 @@ svg {
   color: #fff;
 }
 
+.day-cell.popover-open,
+.mini-day.popover-open {
+  z-index: 80;
+}
+
+.availability-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  z-index: 90;
+  display: grid;
+  width: max-content;
+  min-width: 220px;
+  max-width: min(280px, 82vw);
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: #fff;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  pointer-events: none;
+  text-align: left;
+  transform: translateX(-50%);
+  white-space: normal;
+}
+
+.availability-popover-date {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.day-cell .availability-popover {
+  top: 36px;
+  left: 8px;
+  transform: none;
+}
+
+.day-cell:nth-child(7n) .availability-popover,
+.day-cell:nth-child(7n-1) .availability-popover {
+  right: 8px;
+  left: auto;
+}
+
+.mini-day .availability-popover {
+  left: 0;
+  transform: none;
+}
+
+.mini-day:nth-child(7n) .availability-popover,
+.mini-day:nth-child(7n-1) .availability-popover,
+.mini-day:nth-child(7n-2) .availability-popover {
+  right: 0;
+  left: auto;
+}
+
 .section-heading {
   gap: 8px;
   margin-bottom: 12px;

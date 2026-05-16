@@ -295,29 +295,32 @@ function bindControls() {
   });
   els.systemFilter.addEventListener("change", () => {
     appState.filters.system = els.systemFilter.value;
+    renderMiniCalendar();
     renderCalendarSurface();
   });
   els.gmFilter.addEventListener("change", () => {
     appState.filters.gm = els.gmFilter.value;
     appState.filters.availabilityEventId = "";
+    appState.availability.data = null;
     appState.availabilityDashboard.events = [];
     appState.availabilityDashboard.loadedGm = "";
     renderAvailabilityEventFilter();
+    renderMiniCalendar();
     renderCalendarSurface();
   });
   els.availabilityEventFilter?.addEventListener("focus", () => {
-    void ensureAvailabilityOptionsLoaded();
+    void handleAvailabilityEventFilterOpen();
   });
   els.availabilityEventFilter?.addEventListener("pointerdown", () => {
-    void ensureAvailabilityOptionsLoaded();
+    void handleAvailabilityEventFilterOpen();
   });
   els.availabilityEventFilter?.addEventListener("change", async () => {
     appState.filters.availabilityEventId = els.availabilityEventFilter.value;
-    await loadSelectedAvailabilityForCalendar();
-    renderCalendarSurface();
+    await refreshAvailabilityCalendarFromFilter();
   });
   els.openSeatsOnly.addEventListener("change", () => {
     appState.filters.openSeatsOnly = els.openSeatsOnly.checked;
+    renderMiniCalendar();
     renderCalendarSurface();
   });
   els.loginButton.addEventListener("click", handleLoginButton);
@@ -639,19 +642,23 @@ function renderMonth() {
 }
 
 function showAvailabilityDayPopover(cell, day, availabilityStatus) {
-  cell.querySelector(".availability-popover")?.remove();
-  const popover = document.createElement("div");
+  document.querySelectorAll(".availability-popover").forEach((popover) => popover.remove());
+  document.querySelectorAll(".popover-open").forEach((target) => target.classList.remove("popover-open"));
+  cell.classList.add("popover-open");
+  const popover = document.createElement("span");
   popover.className = "availability-popover";
   popover.innerHTML = `
-    <p>${escapeHtml(formatDateWithWeekday(day))}</p>
-    <p>${escapeHtml(availabilityStatus.slotText || "")}</p>
-    <p>${escapeHtml(availabilityStatus.detailText || availabilityStatus.popoverText)}</p>
+    <span class="availability-popover-date">${escapeHtml(formatDateWithWeekday(day))}</span>
+    <span>${escapeHtml(availabilityStatus.countText || "")}</span>
+    <span>${escapeHtml(availabilityStatus.slotText || "")}</span>
+    <span>${escapeHtml(availabilityStatus.detailText || availabilityStatus.popoverText)}</span>
   `;
   cell.append(popover);
   window.setTimeout(() => {
     const close = (event) => {
       if (!cell.contains(event.target)) {
         popover.remove();
+        cell.classList.remove("popover-open");
         document.removeEventListener("click", close);
       }
     };
@@ -699,24 +706,32 @@ function renderMiniCalendar() {
   els.miniLabel.textContent = `${appState.miniDate.getFullYear()} / ${appState.miniDate.getMonth() + 1}`;
   const mini = $("#miniCalendar");
   mini.innerHTML = "";
+  const availabilityMode = isAvailabilityCalendarMode();
   const start = startOfWeek(startOfMonth(appState.miniDate));
   Array.from({ length: 42 }, (_, index) => addDays(start, index)).forEach((day) => {
     const button = document.createElement("button");
     button.className = "mini-day";
     button.type = "button";
     button.classList.toggle("outside", day.getMonth() !== appState.miniDate.getMonth());
-    button.classList.toggle("active", isSameDate(day, appState.currentDate));
+    button.classList.toggle("active", !availabilityMode && isSameDate(day, appState.currentDate));
     button.classList.toggle("has-events", eventsForDate(day).length > 0);
-    const availabilityStatus = isAvailabilityCalendarMode() ? availabilityDayStatus(toDateInput(day)) : null;
+    const availabilityStatus = availabilityMode ? availabilityDayStatus(toDateInput(day)) : null;
     if (availabilityStatus) {
       button.classList.add(`availability-${availabilityStatus.level}`);
       button.title = [formatDateWithWeekday(day), availabilityStatus.slotText, availabilityStatus.detailText]
         .filter(Boolean)
         .join("\n");
+      button.setAttribute("aria-label", `${formatDateWithWeekday(day)} ${availabilityStatus.countText} ${availabilityStatus.slotText}`);
     }
     button.textContent = String(day.getDate());
-    button.addEventListener("click", () => {
-      if (isAvailabilityCalendarMode()) return;
+    button.addEventListener("click", (event) => {
+      if (availabilityMode) {
+        if (availabilityStatus) {
+          event.stopPropagation();
+          showAvailabilityDayPopover(button, day, availabilityStatus);
+        }
+        return;
+      }
       appState.currentDate = day;
       appState.miniDate = startOfMonth(day);
       els.sidebar.classList.remove("open");
@@ -1250,7 +1265,7 @@ async function loadAvailabilityPoll(eventId) {
       return;
     }
 
-    appState.availability.data = data;
+    appState.availability.data = withAvailabilitySummary(data);
     appState.availability.selectedPlayerIds = appState.availability.selectedPlayerIds.filter((id) =>
       (data.players ?? []).some((player) => player.id === id)
     );
@@ -1262,6 +1277,9 @@ async function loadAvailabilityPoll(eventId) {
     if (appState.availability.eventId === eventId) {
       appState.availability.isLoading = false;
       renderAvailabilityPanel();
+      if (appState.filters.availabilityEventId === eventId) {
+        renderAvailabilityCalendarViews();
+      }
     }
   }
 }
@@ -1326,12 +1344,16 @@ async function handleCreateAvailabilityPoll(event) {
       return;
     }
 
-    appState.availability.data = data;
+    appState.availability.data = withAvailabilitySummary(data);
     appState.availability.selectedPlayerIds = [];
     appState.availability.draft = { dateStart: "", dateEnd: "", playerNames: "" };
     appState.availability.actionError = "";
     appState.availability.actionMessage = "調查已建立，玩家私人連結就在下方。";
+    resetAvailabilityDashboardOptions();
     showStatus("可跑團時間調查已建立，玩家私人連結已顯示在調查面板中。", "success");
+    if (appState.filters.availabilityEventId === selectedEvent.id) {
+      renderAvailabilityCalendarViews();
+    }
     renderAvailabilityPanel(selectedEvent);
     els.availabilityPanel?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   } catch (error) {
@@ -1362,9 +1384,14 @@ async function handleClearAvailabilityPoll(eventId) {
       return;
     }
 
-    appState.availability.data = { event: appState.availability.data?.event ?? null, poll: null, players: [] };
+    appState.availability.data = withAvailabilitySummary({ event: appState.availability.data?.event ?? null, poll: null, players: [] });
     appState.availability.selectedPlayerIds = [];
     appState.availability.actionMessage = "調查已清除，舊玩家連結已失效。";
+    resetAvailabilityDashboardOptions();
+    if (appState.filters.availabilityEventId === eventId) {
+      appState.filters.availabilityEventId = "";
+      renderAvailabilityCalendarViews();
+    }
     showStatus("可跑團時間調查已清除，舊玩家連結已失效。", "success");
   } catch (error) {
     appState.availability.actionError = toReadableError(error, "清除可跑團調查");
@@ -1713,6 +1740,10 @@ async function handleDeleteEvent() {
 
     els.eventDialog.close();
     clearSelectedEvent();
+    if (appState.filters.availabilityEventId === id) {
+      appState.filters.availabilityEventId = "";
+    }
+    resetAvailabilityDashboardOptions();
     await loadData();
     showStatus("團務已刪除。", "success");
     render();
@@ -2589,6 +2620,25 @@ function shouldShowOwnerInfo() {
   return true;
 }
 
+function renderAvailabilityCalendarViews() {
+  renderMiniCalendar();
+  renderCalendarSurface();
+}
+
+function withAvailabilitySummary(data) {
+  if (!data) return data;
+  const players = data.players ?? [];
+  const summary = data.poll ? buildAvailabilitySummary(players, players, data.poll) : null;
+  return { ...data, summary };
+}
+
+function resetAvailabilityDashboardOptions() {
+  appState.availabilityDashboard.events = [];
+  appState.availabilityDashboard.loadedGm = "";
+  appState.availabilityDashboard.eventsByGmId = {};
+  renderAvailabilityEventFilter();
+}
+
 function renderAvailabilityEventFilter() {
   if (!els.availabilityEventFilter) return;
   const role = appState.role;
@@ -2631,13 +2681,29 @@ async function ensureAvailabilityOptionsLoaded() {
   renderAvailabilityEventFilter();
 }
 
+async function handleAvailabilityEventFilterOpen() {
+  await ensureAvailabilityOptionsLoaded();
+  if (!appState.filters.availabilityEventId) return;
+  await loadSelectedAvailabilityForCalendar();
+  renderAvailabilityCalendarViews();
+}
+
+async function refreshAvailabilityCalendarFromFilter() {
+  appState.availability.data = null;
+  renderAvailabilityCalendarViews();
+  await loadSelectedAvailabilityForCalendar();
+  renderAvailabilityCalendarViews();
+}
+
 async function loadSelectedAvailabilityForCalendar() {
+  appState.availability.data = null;
   if (!appState.filters.availabilityEventId || !supabase) return;
   const { data, error } = await supabase.rpc("get_availability_poll", { target_event_id: appState.filters.availabilityEventId });
-  if (error) return;
-  const players = data?.players ?? [];
-  const summary = data?.poll ? buildAvailabilitySummary(players, players, data.poll) : null;
-  appState.availability.data = { ...data, summary };
+  if (error) {
+    showStatus(toReadableError(error, "讀取約時間日曆"));
+    return;
+  }
+  appState.availability.data = withAvailabilitySummary(data);
 }
 
 function isAvailabilityCalendarMode() {
@@ -2653,13 +2719,15 @@ function availabilityDayStatus(dateKey) {
   if (best <= 0) return null;
   const total = appState.availability.data?.players?.length ?? 0;
   const miss = Math.max(0, total - best);
+  const countText = `可跑團人數：${best}/${total}`;
   if (miss === 0) {
     const slotText = formatBestSlotText(day, best);
     return {
       level: "green",
       popoverText: "可開團時段：" + slotText,
+      countText,
       slotText: `最佳時段：${slotText}`,
-      detailText: `可開團時段：${slotText}`
+      detailText: "誰不能跑：無"
     };
   }
   const label = miss === 1 ? "yellow" : "red";
@@ -2667,6 +2735,7 @@ function availabilityDayStatus(dateKey) {
   return {
     level: label,
     popoverText: `缺 ${miss} 人（最佳時段：${slotText}）`,
+    countText,
     slotText: `最佳時段：${slotText}`,
     detailText: buildMissingPlayersText(dateKey, best)
   };
@@ -2678,25 +2747,35 @@ function slotLabelsForCount(day, count) {
 
 function formatBestSlotText(day, count) {
   const labels = TIME_SLOTS.filter((slot) => (day.counts[slot.key] ?? 0) === count).map((slot) => slot.label);
-  if (labels.length === TIME_SLOTS.length) return "整天（上午／下午／晚上）";
+  if (labels.length === TIME_SLOTS.length) return "整天";
   return labels.join("、");
 }
 
 function buildMissingPlayersText(dateKey, bestCount) {
   const pollData = appState.availability.data;
   if (!pollData?.players?.length) return "尚無玩家資料";
-  const bestSlots = TIME_SLOTS.map((slot) => slot.key).filter((slotKey) => {
-    const day = pollData.summary?.calendarDays?.find((item) => item.date === dateKey);
-    return (day?.counts?.[slotKey] ?? 0) === bestCount;
+  const day = pollData.summary?.calendarDays?.find((item) => item.date === dateKey);
+  const bestSlots = TIME_SLOTS.filter((slot) => (day?.counts?.[slot.key] ?? 0) === bestCount);
+  if (bestSlots.length === TIME_SLOTS.length) {
+    const missingNames = new Set();
+    pollData.players.forEach((player) => {
+      const selectedKeys = new Set((player.slots ?? []).map((item) => selectionKey(item.slot_date, item.slot)));
+      const isAvailableAllDay = TIME_SLOTS.every((slot) => selectedKeys.has(selectionKey(dateKey, slot.key)));
+      if (!isAvailableAllDay) missingNames.add(player.display_name || "未命名玩家");
+    });
+    return missingNames.size ? `誰不能跑：${Array.from(missingNames).join("、")}` : "誰不能跑：無";
+  }
+  const rows = bestSlots.map((slot) => {
+    const missingNames = pollData.players
+      .filter((player) => {
+        const selectedKeys = new Set((player.slots ?? []).map((item) => selectionKey(item.slot_date, item.slot)));
+        return !selectedKeys.has(selectionKey(dateKey, slot.key));
+      })
+      .map((player) => player.display_name || "未命名玩家");
+
+    return `${slot.label}：${missingNames.length ? missingNames.join("、") : "無"}`;
   });
-  const missingNames = new Set();
-  pollData.players.forEach((player) => {
-    const selectedKeys = new Set((player.slots ?? []).map((slot) => selectionKey(slot.slot_date, slot.slot)));
-    const hasAnyBestSlot = bestSlots.some((slotKey) => selectedKeys.has(selectionKey(dateKey, slotKey)));
-    if (!hasAnyBestSlot) missingNames.add(player.display_name || "未命名玩家");
-  });
-  if (!missingNames.size) return "所有人皆可";
-  return `缺席：${Array.from(missingNames).join("、")}（共 ${missingNames.size} 人）`;
+  return rows.length ? `誰不能跑：${rows.join("；")}` : "誰不能跑：尚無資料";
 }
 
 function formatRequestTime(isoString) {
