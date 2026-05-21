@@ -7,7 +7,7 @@
       name="description"
       content="跑團月曆，瀏覽近期團務、申請加團，管理員可登入開團。"
     />
-    <title>跑團月曆</title>
+    <title>高雄跑團月曆</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%97%93%EF%B8%8F%3C/text%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://cdn.jsdelivr.net" />
     <link rel="preconnect" href="https://unpkg.com" />
@@ -25,9 +25,9 @@
           <button class="icon-button menu-toggle" id="menuToggle" type="button" aria-label="切換側欄">
             <i data-lucide="menu"></i>
           </button>
-          <div class="brand-mark" aria-hidden="true">T</div>
+          <div class="brand-mark" aria-hidden="true">KH</div>
           <div>
-            <p class="eyebrow">TRPG玩家</p>
+            <p class="eyebrow">TRPG在高雄</p>
             <h1>跑團月曆</h1>
           </div>
         </div>
@@ -120,6 +120,7 @@
 
         <section class="calendar-surface" aria-live="polite">
           <div class="status-strip" id="statusStrip" hidden></div>
+          <div class="copy-toolbar" id="copyToolbar" hidden></div>
           <div class="weekdays desktop-weekdays" aria-hidden="true">
             <span>週日</span>
             <span>週一</span>
@@ -249,9 +250,15 @@
     <dialog class="modal" id="detailDialog">
       <article class="modal-card detail-card">
         <div class="modal-header">
-          <div>
+          <div class="detail-heading">
             <p class="eyebrow" id="detailMeta">團務</p>
-            <h2 id="detailTitle">團名</h2>
+            <div class="detail-title-bar">
+              <h2 id="detailTitle">團名</h2>
+              <button class="ghost-button admin-only" id="copyEventButton" type="button">
+                <i data-lucide="copy"></i>
+                <span>複製</span>
+              </button>
+            </div>
           </div>
           <button class="icon-button" type="button" data-close-dialog="detailDialog" aria-label="關閉">
             <i data-lucide="x"></i>
@@ -310,6 +317,10 @@
                 <i data-lucide="pencil"></i>
                 <span>編輯</span>
               </button>
+              <button class="danger-button admin-only" id="detailDeleteEventButton" type="button">
+                <i data-lucide="trash-2"></i>
+                <span>刪除</span>
+              </button>
             </div>
           </section>
 
@@ -345,6 +356,55 @@
           </aside>
         </div>
       </article>
+    </dialog>
+
+    <dialog class="modal small-modal" id="copyCountDialog">
+      <form class="modal-card copy-count-card" id="copyCountForm">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">複製日期未定團務</p>
+            <h2>要複製幾個？</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="copyCountDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <label>
+          <span>複製數量</span>
+          <input id="copyCountInput" type="number" min="1" max="30" value="1" required />
+        </label>
+        <p class="muted">新團務會保留原本資料，但不會複製申請名單或可跑團時間調查。</p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="copyCountDialog">取消</button>
+          <button class="primary-button" id="copyCountSubmitButton" type="submit">
+            <i data-lucide="copy"></i>
+            <span>建立複本</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal small-modal" id="confirmDialog">
+      <form class="modal-card confirm-card" id="confirmForm" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow" id="confirmEyebrow">確認操作</p>
+            <h2 id="confirmTitle">確定嗎？</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="confirmDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <p class="muted" id="confirmMessage"></p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="submit" value="cancel">取消</button>
+          <span class="spacer"></span>
+          <button class="danger-button" id="confirmActionButton" type="submit" value="confirm">
+            <i data-lucide="trash-2"></i>
+            <span>刪除</span>
+          </button>
+        </div>
+      </form>
     </dialog>
 
     <dialog class="modal" id="applyFeedbackDialog">

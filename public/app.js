@@ -55,6 +55,12 @@ const appState = {
     message: "",
     error: ""
   },
+  copy: {
+    sourceEventId: "",
+    mode: "",
+    selectedDates: new Set(),
+    isSaving: false
+  },
   isSavingEvent: false,
   isDeletingEvent: false,
   isApplying: false,
@@ -190,16 +196,30 @@ const els = {
   applyFeedbackDialog: $("#applyFeedbackDialog"),
   availabilityPanel: $("#availabilityPanel"),
   availabilityPanelContent: $("#availabilityPanelContent"),
+  copyToolbar: $("#copyToolbar"),
   playerAvailabilityPage: $("#playerAvailabilityPage"),
   loginButton: $("#loginButton"),
   changePasswordButton: $("#changePasswordButton"),
   newEventButton: $("#newEventButton"),
   deleteEventButton: $("#deleteEventButton"),
   editEventButton: $("#editEventButton"),
+  copyEventButton: $("#copyEventButton"),
+  copyCountDialog: $("#copyCountDialog"),
+  copyCountForm: $("#copyCountForm"),
+  copyCountInput: $("#copyCountInput"),
+  copyCountSubmitButton: $("#copyCountSubmitButton"),
   detailLineLink: $("#detailLineLink"),
+  detailDeleteEventButton: $("#detailDeleteEventButton"),
+  confirmDialog: $("#confirmDialog"),
+  confirmEyebrow: $("#confirmEyebrow"),
+  confirmTitle: $("#confirmTitle"),
+  confirmMessage: $("#confirmMessage"),
+  confirmActionButton: $("#confirmActionButton"),
   detailGmNotesPanel: $("#detailGmNotesPanel"),
   detailGmNotes: $("#detailGmNotes")
 };
+
+let pendingConfirmResolver = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -285,6 +305,10 @@ function bindControls() {
   $("#menuToggle").addEventListener("click", () => els.sidebar.classList.toggle("open"));
   $$(".segmented").forEach((button) => {
     button.addEventListener("click", () => {
+      if (isCopyDateMode() && button.dataset.view !== "month") {
+        showStatus("請先完成或取消複製模式，再切換列表。");
+        return;
+      }
       appState.view = button.dataset.view;
       render();
     });
@@ -329,10 +353,17 @@ function bindControls() {
   els.eventForm.addEventListener("submit", handleEventSubmit);
   $("#eventDateUndecided").addEventListener("change", syncEventFormModeControls);
   $("#eventCommonSystem").addEventListener("change", () => syncEventSystemControl({ carryActiveValue: true }));
-  els.deleteEventButton.addEventListener("click", handleDeleteEvent);
+  els.deleteEventButton.addEventListener("click", () => handleDeleteEvent());
   els.loginForm.addEventListener("submit", handleLogin);
   els.passwordForm.addEventListener("submit", handlePasswordUpdate);
   els.applyForm.addEventListener("submit", handleApply);
+  els.copyEventButton?.addEventListener("click", handleCopyEventButton);
+  els.copyCountForm?.addEventListener("submit", handleCopyCountSubmit);
+  els.copyCountDialog?.addEventListener("close", () => {
+    if (appState.copy.mode === "count" && !appState.copy.isSaving) {
+      resetCopyMode();
+    }
+  });
   els.editEventButton.addEventListener("click", async () => {
     if (!appState.selectedEvent) return;
     const latestEvent = await refreshSelectedEvent();
@@ -343,11 +374,30 @@ function bindControls() {
     els.detailDialog.close();
     openEventForm(latestEvent);
   });
+  els.detailDeleteEventButton?.addEventListener("click", () => {
+    if (!appState.selectedEvent?.id) return;
+    handleDeleteEvent(appState.selectedEvent.id);
+  });
+  els.confirmDialog?.addEventListener("click", (event) => {
+    if (event.target === els.confirmDialog) {
+      els.confirmDialog.close("cancel");
+    }
+  });
+  els.confirmDialog?.addEventListener("close", () => {
+    const resolver = pendingConfirmResolver;
+    pendingConfirmResolver = null;
+    resolver?.(els.confirmDialog.returnValue === "confirm");
+  });
   $$("[data-close-dialog]").forEach((button) => {
     button.addEventListener("click", () => {
       const dialog = document.getElementById(button.dataset.closeDialog);
       dialog?.close();
     });
+  });
+  els.detailDialog.addEventListener("click", (event) => {
+    if (event.target === els.detailDialog) {
+      els.detailDialog.close();
+    }
   });
   document.addEventListener("click", (event) => {
     if (!els.sidebar.contains(event.target) && !$("#menuToggle").contains(event.target)) {
@@ -507,6 +557,7 @@ function render() {
   const isStaff = appState.role === "admin" || appState.role === "gm";
   els.body.classList.toggle("is-admin", isStaff);
   els.body.classList.toggle("has-session", Boolean(appState.session));
+  els.body.classList.toggle("is-copying", isCopyDateMode());
   els.loginButton.innerHTML = appState.session
     ? '<i data-lucide="log-out"></i><span>登出</span>'
     : '<i data-lucide="log-in"></i><span>管理登入</span>';
@@ -557,7 +608,7 @@ function renderGmFilter() {
 }
 
 function renderCalendarSurface() {
-  const availabilityMode = isAvailabilityCalendarMode();
+  const availabilityMode = isAvailabilityCalendarMode() && !isCopyDateMode();
   const labelDate = appState.currentDate;
   const isMonthView = appState.view === "month";
   els.periodLabel.textContent =
@@ -572,6 +623,7 @@ function renderCalendarSurface() {
   toggleViewSurface(els.calendarGrid, isMonthView);
   toggleViewSurface($(".desktop-weekdays"), isMonthView);
   toggleViewSurface(els.agendaList, !isMonthView);
+  renderCopyToolbar();
 
   if (appState.view === "month") {
     renderMonth();
@@ -585,12 +637,29 @@ function renderMonth() {
   const monthStart = startOfMonth(appState.currentDate);
   const gridStart = startOfWeek(monthStart);
   const days = Array.from({ length: 42 }, (_, index) => addDays(gridStart, index));
+  const copyMode = isCopyDateMode();
 
   days.forEach((day) => {
+    const dateKey = toDateInput(day);
     const cell = document.createElement("section");
     cell.className = "day-cell";
     cell.classList.toggle("outside", day.getMonth() !== appState.currentDate.getMonth());
     cell.classList.toggle("today", isSameDate(day, new Date()));
+    if (copyMode) {
+      const isSelected = appState.copy.selectedDates.has(dateKey);
+      cell.classList.add("copy-selectable");
+      cell.classList.toggle("copy-selected", isSelected);
+      cell.tabIndex = 0;
+      cell.setAttribute("role", "button");
+      cell.setAttribute("aria-pressed", String(isSelected));
+      cell.setAttribute("aria-label", `${formatDateWithWeekday(day)} ${isSelected ? "已選取" : "未選取"}`);
+      cell.addEventListener("click", () => toggleCopyDate(dateKey));
+      cell.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggleCopyDate(dateKey);
+      });
+    }
 
     const dayHeader = document.createElement("div");
     dayHeader.className = "day-header";
@@ -598,7 +667,7 @@ function renderMonth() {
     const number = document.createElement("span");
     number.className = "day-number";
     number.textContent = String(day.getDate());
-    const availabilityStatus = availabilityDayStatus(toDateInput(day));
+    const availabilityStatus = copyMode ? null : availabilityDayStatus(dateKey);
     if (isAvailabilityCalendarMode() && availabilityStatus) {
       number.classList.add(`availability-${availabilityStatus.level}`);
       number.title = availabilityStatus.popoverText;
@@ -608,13 +677,16 @@ function renderMonth() {
     }
     dayHeader.append(number);
 
-    if (appState.role === "admin" || appState.role === "gm") {
+    if ((appState.role === "admin" || appState.role === "gm") && !copyMode) {
       const addButton = document.createElement("button");
       addButton.className = "icon-button compact add-day";
       addButton.type = "button";
-      addButton.setAttribute("aria-label", `${toDateInput(day)} 開團`);
+      addButton.setAttribute("aria-label", `${dateKey} 開團`);
       addButton.innerHTML = '<i data-lucide="plus"></i>';
-      addButton.addEventListener("click", () => openEventForm({ event_date: toDateInput(day) }));
+      addButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openEventForm({ event_date: dateKey });
+      });
       dayHeader.append(addButton);
     }
 
@@ -628,7 +700,9 @@ function renderMonth() {
       more.className = "more-events";
       more.type = "button";
       more.textContent = `還有 ${dayEvents.length - 4} 團`;
-      more.addEventListener("click", () => {
+      more.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (isCopyDateMode()) return;
         appState.view = "agenda";
         appState.currentDate = day;
         render();
@@ -706,7 +780,7 @@ function renderMiniCalendar() {
   els.miniLabel.textContent = `${appState.miniDate.getFullYear()} / ${appState.miniDate.getMonth() + 1}`;
   const mini = $("#miniCalendar");
   mini.innerHTML = "";
-  const availabilityMode = isAvailabilityCalendarMode();
+  const availabilityMode = isAvailabilityCalendarMode() && !isCopyDateMode();
   const start = startOfWeek(startOfMonth(appState.miniDate));
   Array.from({ length: 42 }, (_, index) => addDays(start, index)).forEach((day) => {
     const button = document.createElement("button");
@@ -782,7 +856,11 @@ function createEventChip(event) {
   button.innerHTML = `<span class="time">${escapeHtml(formatTime(event.start_time))}</span><span class="title">${escapeHtml(
     event.title
   )}</span>`;
-  button.addEventListener("click", () => openDetail(event));
+  button.addEventListener("click", (clickEvent) => {
+    clickEvent.stopPropagation();
+    if (isCopyDateMode()) return;
+    openDetail(event);
+  });
   return button;
 }
 
@@ -790,9 +868,10 @@ function createAgendaEvent(event) {
   const item = document.createElement("article");
   item.className = "agenda-event";
   item.tabIndex = 0;
+  const canManage = canManageEvent(event);
   item.innerHTML = `
     <header>
-      <div>
+      <div class="agenda-event-body">
         <div class="agenda-event-title">
           <h3>${escapeHtml(event.title)}</h3>
           ${eventLabelMarkup(event)}
@@ -800,12 +879,29 @@ function createAgendaEvent(event) {
         <p>${escapeHtml(eventAgendaMeta(event))}</p>
         ${shouldShowOwnerInfo() ? `<span class="owner-label">${escapeHtml(ownerDisplayName(event))}</span>` : ""}
       </div>
-      ${seatPill(event)}
+      <div class="agenda-event-actions">
+        ${seatPill(event)}
+        ${
+          canManage
+            ? `<button class="danger-button compact-action" type="button" data-action="delete-event" aria-label="刪除 ${escapeAttr(
+                event.title
+              )}" ${appState.isDeletingEvent ? "disabled" : ""}>
+                <i data-lucide="trash-2"></i>
+                <span>刪除</span>
+              </button>`
+            : ""
+        }
+      </div>
     </header>
   `;
   item.addEventListener("click", () => openDetail(event));
   item.addEventListener("keydown", (eventKey) => {
+    if (eventKey.target !== item) return;
     if (eventKey.key === "Enter") openDetail(event);
+  });
+  item.querySelector('[data-action="delete-event"]')?.addEventListener("click", (clickEvent) => {
+    clickEvent.stopPropagation();
+    handleDeleteEvent(event.id);
   });
   return item;
 }
@@ -860,6 +956,17 @@ function openDetail(event) {
     loadAvailabilityPoll(event.id);
   }
   els.editEventButton.hidden = !canManage;
+  els.editEventButton.disabled = appState.isDeletingEvent;
+  if (els.detailDeleteEventButton) {
+    els.detailDeleteEventButton.hidden = !canManage;
+    els.detailDeleteEventButton.disabled = appState.isDeletingEvent;
+    const label = els.detailDeleteEventButton.querySelector("span");
+    if (label) label.textContent = appState.isDeletingEvent ? "刪除中..." : "刪除";
+  }
+  if (els.copyEventButton) {
+    els.copyEventButton.hidden = !canManage;
+    els.copyEventButton.disabled = appState.isDeletingEvent;
+  }
   els.applyForm.reset();
   $("#applicantPlayers").value = 1;
   els.detailDialog.showModal();
@@ -1546,6 +1653,13 @@ function setEventDeleting(isDeleting) {
   els.deleteEventButton.disabled = isDeleting || appState.isSavingEvent;
   const deleteLabel = els.deleteEventButton?.querySelector("span");
   if (deleteLabel) deleteLabel.textContent = isDeleting ? "刪除中..." : "刪除";
+  els.editEventButton.disabled = isDeleting;
+  if (els.copyEventButton) els.copyEventButton.disabled = isDeleting;
+  if (els.detailDeleteEventButton) {
+    els.detailDeleteEventButton.disabled = isDeleting || appState.isSavingEvent;
+    const detailDeleteLabel = els.detailDeleteEventButton.querySelector("span");
+    if (detailDeleteLabel) detailDeleteLabel.textContent = isDeleting ? "刪除中..." : "刪除";
+  }
   const submitButton = els.eventForm.querySelector('button[type="submit"]');
   if (submitButton) submitButton.disabled = isDeleting || appState.isSavingEvent;
 }
@@ -1700,15 +1814,55 @@ async function savePrivateNotes(eventId, gmNotes) {
   if (error) throw error;
 }
 
-async function handleDeleteEvent() {
-  const id = $("#eventId").value;
+function openConfirmDialog({ eyebrow = "確認操作", title = "確定嗎？", message = "", confirmLabel = "確認" } = {}) {
+  if (!els.confirmDialog) return Promise.resolve(window.confirm(message || title));
+
+  if (pendingConfirmResolver) {
+    pendingConfirmResolver(false);
+    pendingConfirmResolver = null;
+  }
+  if (els.confirmDialog.open) {
+    els.confirmDialog.close("cancel");
+  }
+
+  els.confirmDialog.returnValue = "";
+  els.confirmEyebrow.textContent = eyebrow;
+  els.confirmTitle.textContent = title;
+  els.confirmMessage.textContent = message;
+  const confirmLabelElement = els.confirmActionButton?.querySelector("span");
+  if (confirmLabelElement) confirmLabelElement.textContent = confirmLabel;
+
+  return new Promise((resolve) => {
+    pendingConfirmResolver = resolve;
+    els.confirmDialog.showModal();
+    seedIcons();
+  });
+}
+
+function confirmDeleteEvent(event) {
+  const eventTitle = event?.title ? `「${event.title}」` : "這個團務";
+  return openConfirmDialog({
+    eyebrow: "刪除團務",
+    title: "確定刪除團務？",
+    message: `${eventTitle} 會被永久刪除，相關申請與可跑團時間調查也會一併移除。`,
+    confirmLabel: "刪除"
+  });
+}
+
+async function handleDeleteEvent(id = $("#eventId").value) {
+  if (typeof id !== "string") {
+    id = $("#eventId").value;
+  }
   if (appState.isDeletingEvent) return;
-  if (!id || !confirm("確定刪除這個團務？")) return;
-  const event = eventById(id);
+  if (!id) return;
+
+  const event = eventById(id) ?? (appState.selectedEvent?.id === id ? appState.selectedEvent : null);
   if (event && !canManageEvent(event)) {
     showStatus("你沒有權限刪除這個團務。");
     return;
   }
+  const confirmed = await confirmDeleteEvent(event);
+  if (!confirmed) return;
 
   setEventDeleting(true);
   try {
@@ -1752,6 +1906,266 @@ async function handleDeleteEvent() {
   } finally {
     setEventDeleting(false);
   }
+}
+
+async function handleCopyEventButton() {
+  if (!appState.selectedEvent?.id || appState.copy.isSaving) return;
+  const latestEvent = await refreshSelectedEvent();
+  if (!latestEvent) {
+    showStatus("複製失敗：找不到最新團務資料，請重新整理後再試。");
+    return;
+  }
+  if (!canManageEvent(latestEvent)) {
+    showStatus("複製失敗：你沒有權限複製這個團務。");
+    return;
+  }
+
+  if (isDateUndecided(latestEvent)) {
+    startCopyCountMode(latestEvent);
+    return;
+  }
+
+  startCopyDateMode(latestEvent);
+}
+
+function startCopyDateMode(sourceEvent) {
+  appState.copy.sourceEventId = sourceEvent.id;
+  appState.copy.mode = "dates";
+  appState.copy.selectedDates = new Set();
+  appState.copy.isSaving = false;
+  appState.view = "month";
+  if (sourceEvent.event_date) {
+    appState.currentDate = parseDate(sourceEvent.event_date);
+    appState.miniDate = startOfMonth(appState.currentDate);
+  }
+  appState.filters.availabilityEventId = "";
+  appState.availability.data = null;
+  els.detailDialog.close();
+  render();
+  showStatus("請在大月曆上選擇要複製到的日期。");
+}
+
+function startCopyCountMode(sourceEvent) {
+  appState.copy.sourceEventId = sourceEvent.id;
+  appState.copy.mode = "count";
+  appState.copy.selectedDates = new Set();
+  appState.copy.isSaving = false;
+  els.detailDialog.close();
+  if (els.copyCountInput) els.copyCountInput.value = "1";
+  els.copyCountDialog?.showModal();
+  seedIcons();
+}
+
+function resetCopyMode() {
+  appState.copy.sourceEventId = "";
+  appState.copy.mode = "";
+  appState.copy.selectedDates = new Set();
+  appState.copy.isSaving = false;
+  els.body.classList.remove("is-copying");
+  if (els.copyToolbar) {
+    els.copyToolbar.hidden = true;
+    els.copyToolbar.innerHTML = "";
+  }
+}
+
+function isCopyDateMode() {
+  return appState.copy.mode === "dates" && Boolean(appState.copy.sourceEventId);
+}
+
+function toggleCopyDate(dateKey) {
+  if (!isCopyDateMode() || appState.copy.isSaving) return;
+  if (appState.copy.selectedDates.has(dateKey)) {
+    appState.copy.selectedDates.delete(dateKey);
+  } else {
+    appState.copy.selectedDates.add(dateKey);
+  }
+  renderCalendarSurface();
+  seedIcons();
+}
+
+function renderCopyToolbar() {
+  if (!els.copyToolbar) return;
+  if (!isCopyDateMode()) {
+    els.copyToolbar.hidden = true;
+    els.copyToolbar.innerHTML = "";
+    return;
+  }
+
+  const sourceEvent = eventById(appState.copy.sourceEventId) ?? appState.selectedEvent;
+  if (!sourceEvent || !canManageEvent(sourceEvent)) {
+    resetCopyMode();
+    return;
+  }
+
+  const selectedDates = Array.from(appState.copy.selectedDates).sort();
+  const selectedText = selectedDates.length
+    ? selectedDates.slice(0, 5).map((dateKey) => formatDateWithWeekday(parseDate(dateKey))).join("、")
+    : "尚未選擇日期";
+  const overflowText = selectedDates.length > 5 ? `，另 ${selectedDates.length - 5} 天` : "";
+  els.copyToolbar.hidden = false;
+  els.copyToolbar.innerHTML = `
+    <div class="copy-toolbar-text">
+      <strong>複製「${escapeHtml(sourceEvent.title || "團務")}」</strong>
+      <span>${escapeHtml(selectedText + overflowText)}</span>
+    </div>
+    <div class="copy-toolbar-actions">
+      <button class="ghost-button" type="button" data-copy-cancel ${appState.copy.isSaving ? "disabled" : ""}>取消</button>
+      <button class="primary-button" type="button" data-copy-confirm ${!selectedDates.length || appState.copy.isSaving ? "disabled" : ""}>
+        <i data-lucide="copy"></i>
+        <span>${appState.copy.isSaving ? "建立中..." : `建立 ${selectedDates.length} 筆複本`}</span>
+      </button>
+    </div>
+  `;
+  els.copyToolbar.querySelector("[data-copy-cancel]")?.addEventListener("click", () => {
+    resetCopyMode();
+    render();
+  });
+  els.copyToolbar.querySelector("[data-copy-confirm]")?.addEventListener("click", handleConfirmCopyDates);
+}
+
+async function handleConfirmCopyDates() {
+  if (!isCopyDateMode() || appState.copy.isSaving) return;
+  const selectedDates = Array.from(appState.copy.selectedDates).sort();
+  if (!selectedDates.length) {
+    showStatus("請至少選擇一個要複製到的日期。");
+    return;
+  }
+
+  const sourceEvent = await refreshSelectedEventById(appState.copy.sourceEventId);
+  if (!sourceEvent || !canManageEvent(sourceEvent)) {
+    showStatus("複製失敗：找不到團務或你沒有權限。");
+    resetCopyMode();
+    render();
+    return;
+  }
+
+  appState.copy.isSaving = true;
+  renderCopyToolbar();
+  seedIcons();
+  try {
+    const result = await createEventCopies(
+      sourceEvent,
+      selectedDates.map((dateKey) => ({ event_date: dateKey, is_date_undecided: false }))
+    );
+    resetCopyMode();
+    await loadData();
+    render();
+    showCopyResult(result.createdCount, result.noteError);
+  } catch (error) {
+    appState.copy.isSaving = false;
+    renderCopyToolbar();
+    showStatus(toReadableError(error, "複製團務"));
+  }
+}
+
+async function handleCopyCountSubmit(event) {
+  event.preventDefault();
+  if (appState.copy.isSaving) return;
+  const count = Number(els.copyCountInput?.value);
+  if (!Number.isInteger(count) || count < 1 || count > 30) {
+    els.copyCountInput?.reportValidity();
+    showStatus("複製失敗：請輸入 1 到 30 之間的數量。");
+    return;
+  }
+
+  const sourceEvent = await refreshSelectedEventById(appState.copy.sourceEventId);
+  if (!sourceEvent || !canManageEvent(sourceEvent)) {
+    showStatus("複製失敗：找不到團務或你沒有權限。");
+    els.copyCountDialog?.close();
+    resetCopyMode();
+    return;
+  }
+
+  appState.copy.isSaving = true;
+  setCopyCountSubmitting(true);
+  try {
+    const result = await createEventCopies(
+      sourceEvent,
+      Array.from({ length: count }, () => ({ event_date: null, is_date_undecided: true }))
+    );
+    els.copyCountDialog?.close();
+    resetCopyMode();
+    await loadData();
+    render();
+    showCopyResult(result.createdCount, result.noteError);
+  } catch (error) {
+    showStatus(toReadableError(error, "複製團務"));
+  } finally {
+    setCopyCountSubmitting(false);
+    appState.copy.isSaving = false;
+  }
+}
+
+function setCopyCountSubmitting(isSubmitting) {
+  if (!els.copyCountSubmitButton) return;
+  els.copyCountSubmitButton.disabled = isSubmitting;
+  const label = els.copyCountSubmitButton.querySelector("span");
+  if (label) label.textContent = isSubmitting ? "建立中..." : "建立複本";
+}
+
+async function createEventCopies(sourceEvent, variants) {
+  if (!variants.length) return { createdCount: 0, noteError: null };
+  const payloads = variants.map((variant) => copiedEventPayload(sourceEvent, variant));
+
+  if (supabase) {
+    const { data, error } = await supabase.from("events").insert(payloads).select("id");
+    if (error) throw error;
+    if (!data || data.length !== payloads.length) {
+      throw new Error("複製筆數與資料庫回傳筆數不一致。");
+    }
+    const noteError = await copyPrivateNotesToEvents(
+      data.map((row) => row.id),
+      sourceEvent.gm_notes ?? ""
+    );
+    return { createdCount: data.length, noteError };
+  }
+
+  const localEvents = [...appState.events];
+  const copies = payloads.map((payload) => ({
+    id: crypto.randomUUID(),
+    ...payload,
+    gm_notes: sourceEvent.gm_notes ?? ""
+  }));
+  writeLocal("trpg-ka-events", [...localEvents, ...copies]);
+  return { createdCount: copies.length, noteError: null };
+}
+
+function copiedEventPayload(sourceEvent, variant) {
+  const ownerUserId = sourceEvent.owner_user_id || appState.session?.user?.id || null;
+  return {
+    owner_user_id: ownerUserId,
+    title: sourceEvent.title ?? "",
+    host_name: sourceEvent.host_name ?? "",
+    system_name: sourceEvent.system_name ?? "",
+    scenario_name: sourceEvent.scenario_name ?? "",
+    event_date: variant.is_date_undecided ? null : variant.event_date,
+    is_date_undecided: variant.is_date_undecided,
+    start_time: sourceEvent.start_time || null,
+    end_time: sourceEvent.end_time || null,
+    location_name: sourceEvent.location_name ?? "",
+    map_url: sourceEvent.map_url || null,
+    line_url: sourceEvent.line_url || null,
+    seats_total: Number(sourceEvent.seats_total || 1),
+    approved_players_count: 0,
+    description: sourceEvent.description ?? "",
+    is_registration_closed: sourceEvent.is_registration_closed === true,
+    is_public: sourceEvent.is_public !== false
+  };
+}
+
+async function copyPrivateNotesToEvents(eventIds, gmNotes) {
+  if (!supabase || !eventIds.length || !String(gmNotes).trim()) return null;
+  const notes = eventIds.map((eventId) => ({ event_id: eventId, gm_notes: gmNotes }));
+  const { error } = await supabase.from("event_private_notes").upsert(notes, { onConflict: "event_id" });
+  return error ?? null;
+}
+
+function showCopyResult(createdCount, noteError) {
+  if (noteError) {
+    showStatus(`已複製 ${createdCount} 筆團務，但 GM 小筆記複製失敗：${noteError.message}`);
+    return;
+  }
+  showStatus(`已複製 ${createdCount} 筆團務。`, "success");
 }
 
 async function handleApply(event) {
@@ -2129,7 +2543,57 @@ function bindPlayerAvailabilityInteractions() {
   els.playerAvailabilityPage.querySelector("#playerNextMonth")?.addEventListener("click",()=>{ state.calendarMonth=toDateInput(addMonths(parseDate(`${state.calendarMonth}-01`),1)).slice(0,7); state.editorDate=""; renderPlayerAvailabilityPage();});
 }
 
-function playerCalendarView(dates){ const state=appState.playerAvailability; const month=state.calendarMonth||dates[0].slice(0,7); const first=parseDate(`${month}-01`); const start=addDays(first,-first.getDay()); const end=addDays(start,41); const allowed=new Set(dates); const cells=[]; for(let d=new Date(start); d<=end; d=addDays(d,1)){ const key=toDateInput(d); const inMonth=key.startsWith(month); const disabled=!allowed.has(key); const selected=TIME_SLOTS.filter((slot)=>hasPlayerSlot(key,slot.key)).length; cells.push(`<button type="button" class="player-cal-day ${inMonth?"":"muted-day"} ${selected?"has-choice":""}" data-calendar-date="${key}" ${disabled?"disabled":""}><span>${d.getDate()}</span>${selected?`<small>${selected}/3</small>`:""}</button>`);} return `<div class="player-calendar-wrap"><div class="player-cal-head"><button type="button" class="icon-button" id="playerPrevMonth">◀</button><strong>${month}</strong><button type="button" class="icon-button" id="playerNextMonth">▶</button></div><div class="player-cal-grid">${cells.join("")}</div></div>`;}
+function playerCalendarView(dates) {
+  const state = appState.playerAvailability;
+  const month = state.calendarMonth || dates[0].slice(0, 7);
+  const first = parseDate(`${month}-01`);
+  const start = addDays(first, -first.getDay());
+  const end = addDays(start, 41);
+  const allowed = new Set(dates);
+  const cells = [];
+
+  for (let d = new Date(start); d <= end; d = addDays(d, 1)) {
+    const key = toDateInput(d);
+    const inMonth = key.startsWith(month);
+    const disabled = !allowed.has(key);
+    const selectedSlots = TIME_SLOTS.filter((slot) => hasPlayerSlot(key, slot.key));
+    const selectedText = selectedSlots.map((slot) => slot.label).join("、");
+    const weekday = ["日", "一", "二", "三", "四", "五", "六"][d.getDay()];
+
+    cells.push(`
+      <button
+        type="button"
+        class="player-cal-day ${inMonth ? "" : "muted-day"} ${selectedSlots.length ? "has-choice" : ""}"
+        data-calendar-date="${key}"
+        aria-label="${escapeAttr(`${key} (${weekday})${selectedText ? ` 已選 ${selectedText}` : ""}`)}"
+        ${disabled ? "disabled" : ""}
+      >
+        <span class="player-cal-date">
+          <span>${d.getDate()}</span>
+          <span class="player-cal-weekday">(${weekday})</span>
+        </span>
+        ${
+          selectedSlots.length
+            ? `<small class="player-cal-slots">${selectedSlots
+                .map((slot) => `<span class="player-cal-slot">${escapeHtml(slot.label)}</span>`)
+                .join("")}</small>`
+            : ""
+        }
+      </button>
+    `);
+  }
+
+  return `
+    <div class="player-calendar-wrap">
+      <div class="player-cal-head">
+        <button type="button" class="icon-button" id="playerPrevMonth">◀</button>
+        <strong>${month}</strong>
+        <button type="button" class="icon-button" id="playerNextMonth">▶</button>
+      </div>
+      <div class="player-cal-grid">${cells.join("")}</div>
+    </div>
+  `;
+}
 function applyDateSelection(dateKey,slot){ if(!dateKey) return; if(slot==="all"){ TIME_SLOTS.forEach((s)=>setPlayerSlot(dateKey,s.key,true)); return; } setPlayerSlot(dateKey,slot,!hasPlayerSlot(dateKey,slot)); }
 function playerDateModal(dates){ const state=appState.playerAvailability; if(!state.editorDate || !dates.includes(state.editorDate)) return ""; const dateKey=state.editorDate; const allSelected=TIME_SLOTS.every((slot)=>hasPlayerSlot(dateKey,slot.key)); return `<div class="player-date-modal-backdrop" data-date-modal-backdrop><div class="player-date-modal"><header><strong>${escapeHtml(formatDateWithWeekday(parseDate(dateKey)))}</strong><button type="button" class="icon-button compact" data-close-date-modal>✕</button></header><div class="player-modal-vshape"><button type="button" class="ghost-button ${allSelected ? "active" : ""}" data-modal-pick-slot="all">整天</button><div><button type="button" class="ghost-button ${hasPlayerSlot(dateKey, "morning") ? "active" : ""}" data-modal-pick-slot="morning">上午</button><button type="button" class="ghost-button ${hasPlayerSlot(dateKey, "afternoon") ? "active" : ""}" data-modal-pick-slot="afternoon">下午</button><button type="button" class="ghost-button ${hasPlayerSlot(dateKey, "evening") ? "active" : ""}" data-modal-pick-slot="evening">晚上</button></div></div><p class="muted">可連續點選多個時段，完成後再關閉視窗。</p></div></div>`; }
 async function handlePlayerSaveAndClose(){ const ok=await savePlayerAvailability(); if(!ok)return; window.close(); if(!window.closed){ appState.playerAvailability.message="已儲存，請手動關閉此分頁。"; renderPlayerAvailabilityPage(); }}

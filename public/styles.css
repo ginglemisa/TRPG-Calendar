@@ -83,7 +83,8 @@ a {
 .detail-list dt,
 .request-item header,
 .event-chip,
-.agenda-event header {
+.agenda-event header,
+.agenda-event-actions {
   display: flex;
   align-items: center;
 }
@@ -261,6 +262,21 @@ h2 {
 
 .danger-button:hover {
   border-color: #fda29b;
+}
+
+.primary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled,
+.today-button:disabled,
+.mini-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.compact-action {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
 }
 
 .view-switch {
@@ -515,6 +531,42 @@ textarea:focus {
   font-size: 14px;
 }
 
+.copy-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #a8c7fa;
+  border-radius: var(--radius);
+  background: #f8fbff;
+}
+
+.copy-toolbar-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.copy-toolbar-text strong,
+.copy-toolbar-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-toolbar-text span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.copy-toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .weekdays {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -562,6 +614,45 @@ textarea:focus {
   border-radius: 50%;
   background: var(--primary);
   color: #fff;
+}
+
+.day-cell.copy-selectable {
+  cursor: pointer;
+  outline: 0;
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.day-cell.copy-selectable:hover,
+.day-cell.copy-selectable:focus {
+  background: #f8fbff;
+  box-shadow: inset 0 0 0 2px #a8c7fa;
+}
+
+.day-cell.copy-selected {
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.day-cell.copy-selected .day-number::after {
+  content: "已選";
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.is-copying .event-chip {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .day-header {
@@ -689,6 +780,16 @@ textarea:focus {
   gap: 12px;
 }
 
+.agenda-event-body {
+  min-width: 0;
+}
+
+.agenda-event-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .agenda-event h3 {
   margin-bottom: 6px;
   font-size: 17px;
@@ -795,6 +896,10 @@ textarea:focus {
   color: var(--text);
 }
 
+.small-modal {
+  width: min(100% - 28px, 420px);
+}
+
 .modal::backdrop {
   background: rgba(15, 23, 42, 0.44);
 }
@@ -818,6 +923,42 @@ textarea:focus {
 
 .modal-header h2 {
   font-size: 24px;
+}
+
+.detail-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.detail-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-title-bar h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-title-bar .ghost-button {
+  flex: 0 0 auto;
+}
+
+.copy-count-card {
+  display: grid;
+  gap: 12px;
+}
+
+.confirm-card {
+  display: grid;
+  gap: 12px;
+}
+
+.confirm-card .modal-header,
+.confirm-card .muted {
+  margin-bottom: 0;
 }
 
 .event-title-row {
@@ -1725,6 +1866,14 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .agenda-event header {
+    align-items: flex-start;
+  }
+
+  .agenda-event-actions {
+    flex-wrap: wrap;
+  }
+
   .form-grid,
   .detail-layout,
   .detail-list,
@@ -1746,16 +1895,34 @@ textarea:focus {
   .availability-link-row,
   .availability-links-header,
   .availability-link-actions,
+  .copy-toolbar,
   .player-page-header {
     display: grid;
   }
 
   .availability-toolbar-actions,
+  .copy-toolbar-actions,
+  .copy-toolbar .ghost-button,
+  .copy-toolbar .primary-button,
   .availability-link-row .ghost-button,
   .availability-link-actions .ghost-button,
   .availability-toolbar .ghost-button,
   .availability-toolbar .danger-button {
     width: 100%;
+  }
+
+  .copy-toolbar-text strong,
+  .copy-toolbar-text span {
+    white-space: normal;
+  }
+
+  .copy-toolbar-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .detail-title-bar {
+    align-items: flex-start;
   }
 
   .player-availability-page {
@@ -1776,6 +1943,16 @@ textarea:focus {
 
   .modal-card {
     padding: 18px;
+  }
+
+  #detailDialog {
+    width: min(100% - 40px, 960px);
+    max-height: calc(100dvh - 48px);
+  }
+
+  #detailDialog .modal-card {
+    max-height: calc(100dvh - 48px);
+    padding: 16px;
   }
 
   .modal-actions {
@@ -1821,11 +1998,14 @@ textarea:focus {
 .player-calendar-wrap{display:grid;gap:10px}
 .player-cal-head{display:flex;justify-content:center;align-items:center;gap:12px}
 .player-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
-.player-cal-day{position:relative;min-height:84px;border:1px solid var(--border);background:#fff;border-radius:8px;text-align:left;padding:6px;display:grid;align-content:space-between}
+.player-cal-day{position:relative;min-height:92px;border:1px solid var(--border);background:#fff;border-radius:8px;text-align:left;padding:6px;display:grid;align-content:space-between;gap:8px}
 .player-cal-day.has-choice{border-color:var(--primary)}
 .player-cal-day:disabled{opacity:.45;cursor:not-allowed}
 .player-cal-day.muted-day{background:#f8fafc}
-.player-cal-day small{color:var(--primary);font-weight:700}
+.player-cal-date{display:flex;align-items:center;gap:3px;font-weight:700;line-height:1.2}
+.player-cal-weekday{color:var(--muted);font-size:12px;font-weight:600}
+.player-cal-slots{display:flex;flex-wrap:wrap;gap:4px;color:var(--primary);font-weight:700}
+.player-cal-slot{display:inline-flex;align-items:center;min-height:20px;padding:1px 5px;border-radius:6px;background:var(--primary-soft);line-height:1.2}
 .player-date-modal-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:grid;place-items:center;z-index:30;padding:12px}
 .player-date-modal{width:min(100%,460px);background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px;display:grid;gap:12px;box-shadow:var(--shadow)}
 .player-date-modal header{display:flex;align-items:center;justify-content:space-between}
