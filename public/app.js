@@ -179,6 +179,9 @@ const els = {
   availabilityEventFilter: $("#availabilityEventFilter"),
   openSeatsOnly: $("#openSeatsOnly"),
   sidebar: $("#sidebar"),
+  sidebarBackdrop: $("#sidebarBackdrop"),
+  sidebarCloseButton: $("#sidebarCloseButton"),
+  menuToggle: $("#menuToggle"),
   requestList: $("#requestList"),
   detailRequestsPanel: $("#detailRequestsPanel"),
   detailRequests: $("#detailRequests"),
@@ -302,7 +305,9 @@ function bindControls() {
     appState.miniDate = addMonths(appState.miniDate, 1);
     renderMiniCalendar();
   });
-  $("#menuToggle").addEventListener("click", () => els.sidebar.classList.toggle("open"));
+  els.menuToggle.addEventListener("click", () => setSidebarOpen(!els.sidebar.classList.contains("open")));
+  els.sidebarBackdrop?.addEventListener("click", () => setSidebarOpen(false));
+  els.sidebarCloseButton?.addEventListener("click", () => setSidebarOpen(false));
   $$(".segmented").forEach((button) => {
     button.addEventListener("click", () => {
       if (isCopyDateMode() && button.dataset.view !== "month") {
@@ -400,10 +405,18 @@ function bindControls() {
     }
   });
   document.addEventListener("click", (event) => {
-    if (!els.sidebar.contains(event.target) && !$("#menuToggle").contains(event.target)) {
-      els.sidebar.classList.remove("open");
+    if (!els.sidebar.contains(event.target) && !els.menuToggle.contains(event.target)) {
+      setSidebarOpen(false);
     }
   });
+}
+
+function setSidebarOpen(isOpen) {
+  els.sidebar.classList.toggle("open", isOpen);
+  els.menuToggle.setAttribute("aria-expanded", String(isOpen));
+  if (!els.sidebarBackdrop) return;
+  els.sidebarBackdrop.hidden = !isOpen;
+  els.sidebarBackdrop.classList.toggle("open", isOpen);
 }
 
 async function loadData() {
@@ -558,10 +571,17 @@ function render() {
   els.body.classList.toggle("is-admin", isStaff);
   els.body.classList.toggle("has-session", Boolean(appState.session));
   els.body.classList.toggle("is-copying", isCopyDateMode());
+  const loginLabel = appState.session ? "登出" : "管理登入";
   els.loginButton.innerHTML = appState.session
     ? '<i data-lucide="log-out"></i><span>登出</span>'
     : '<i data-lucide="log-in"></i><span>管理登入</span>';
-  $$(".segmented").forEach((button) => button.classList.toggle("active", button.dataset.view === appState.view));
+  els.loginButton.setAttribute("aria-label", loginLabel);
+  els.loginButton.setAttribute("title", loginLabel);
+  $$(".segmented").forEach((button) => {
+    const isActive = button.dataset.view === appState.view;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
   renderSystemFilter();
   renderGmFilter();
   renderAvailabilityEventFilter();
@@ -808,7 +828,7 @@ function renderMiniCalendar() {
       }
       appState.currentDate = day;
       appState.miniDate = startOfMonth(day);
-      els.sidebar.classList.remove("open");
+      setSidebarOpen(false);
       render();
     });
     mini.append(button);
@@ -855,7 +875,7 @@ function createEventChip(event) {
   button.classList.toggle("full", remainingSeats(event) <= 0);
   button.innerHTML = `<span class="time">${escapeHtml(formatTime(event.start_time))}</span><span class="title">${escapeHtml(
     event.title
-  )}</span>`;
+  )}</span><span class="mobile-seat">${escapeHtml(seatPillText(event))}</span>`;
   button.addEventListener("click", (clickEvent) => {
     clickEvent.stopPropagation();
     if (isCopyDateMode()) return;
@@ -2485,7 +2505,7 @@ function renderPlayerAvailabilityPage() {
           <h1>${escapeHtml(data.event.title)}</h1>
           <p class="muted">${escapeHtml([data.event.system_name, data.event.scenario_name].filter(Boolean).join(" / "))}</p>
           <p class="muted">「整天」會同時選取上午、下午、晚上。再次儲存會覆蓋你前一次填寫的內容。</p>
-          <p class="success-message">已儲存，你可以之後用同一個連結再回來更新。</p>
+          ${state.message ? `<p class="success-message">${escapeHtml(state.message)}</p>` : ""}
         </div>
       </header>
 
@@ -3255,10 +3275,14 @@ function formatRequestTime(isoString) {
 }
 
 function seatPill(event) {
-  const remaining = remainingSeats(event);
-  const className = remaining > 0 ? "open" : "full";
-  const text = remaining > 0 ? `餘 ${remaining}` : "額滿";
+  const text = seatPillText(event);
+  const className = remainingSeats(event) > 0 ? "open" : "full";
   return `<span class="pill ${className}">${text}</span>`;
+}
+
+function seatPillText(event) {
+  const remaining = remainingSeats(event);
+  return remaining > 0 ? `餘 ${remaining}` : "額滿";
 }
 
 function statusText(status) {
@@ -3269,13 +3293,24 @@ function statusText(status) {
   }[status] ?? status;
 }
 
-function showStatus(message) {
+function showStatus(message, tone = inferStatusTone(message)) {
+  const safeTone = ["success", "error", "warning"].includes(tone) ? tone : "warning";
   els.statusStrip.textContent = message;
+  els.statusStrip.classList.remove("success", "error", "warning");
+  els.statusStrip.classList.add(safeTone);
+  els.statusStrip.setAttribute("role", safeTone === "error" ? "alert" : "status");
   els.statusStrip.hidden = false;
   window.clearTimeout(showStatus.timer);
   showStatus.timer = window.setTimeout(() => {
     els.statusStrip.hidden = true;
   }, 6000);
+}
+
+function inferStatusTone(message) {
+  const text = String(message ?? "");
+  if (/失敗|錯誤|無法|沒有權限|格式不正確|不支援|不存在|找不到/.test(text)) return "error";
+  if (/^已(?!取消)|成功/.test(text)) return "success";
+  return "warning";
 }
 
 function readLocal(key, fallback) {

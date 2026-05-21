@@ -7,7 +7,7 @@
       name="description"
       content="跑團月曆，瀏覽近期團務、申請加團，管理員可登入開團。"
     />
-    <title>跑團月曆</title>
+    <title>高雄跑團月曆</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%97%93%EF%B8%8F%3C/text%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://cdn.jsdelivr.net" />
     <link rel="preconnect" href="https://unpkg.com" />
@@ -22,12 +22,12 @@
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <button class="icon-button menu-toggle" id="menuToggle" type="button" aria-label="切換側欄">
+          <button class="icon-button menu-toggle" id="menuToggle" type="button" aria-label="切換側欄" aria-expanded="false" aria-controls="sidebar">
             <i data-lucide="menu"></i>
           </button>
-          <div class="brand-mark" aria-hidden="true">T</div>
+          <div class="brand-mark" aria-hidden="true">KH</div>
           <div>
-            <p class="eyebrow">TRPG玩家</p>
+            <p class="eyebrow">TRPG在高雄</p>
             <h1>跑團月曆</h1>
           </div>
         </div>
@@ -48,8 +48,8 @@
         </div>
 
         <div class="header-view-switch view-switch" role="tablist" aria-label="檢視切換">
-            <button class="segmented active" id="monthView" type="button" data-view="month" role="tab">月份</button>
-            <button class="segmented" id="agendaView" type="button" data-view="agenda" role="tab">列表</button>
+            <button class="segmented active" id="monthView" type="button" data-view="month" role="tab" aria-selected="true" aria-controls="calendarGrid">月份</button>
+            <button class="segmented" id="agendaView" type="button" data-view="agenda" role="tab" aria-selected="false" aria-controls="agendaList">列表</button>
           </div>
 
         <div class="top-actions">
@@ -61,7 +61,7 @@
             <i data-lucide="key-round"></i>
             <span>修改密碼</span>
           </button>
-          <button class="ghost-button" id="loginButton" type="button">
+          <button class="ghost-button" id="loginButton" type="button" aria-label="管理登入" title="管理登入">
             <i data-lucide="log-in"></i>
             <span>管理登入</span>
           </button>
@@ -69,7 +69,14 @@
       </header>
 
       <main class="main-layout">
+        <button class="sidebar-backdrop" id="sidebarBackdrop" type="button" aria-label="關閉側欄" hidden></button>
         <aside class="sidebar" id="sidebar">
+          <div class="sidebar-mobile-header">
+            <strong>篩選與小月曆</strong>
+            <button class="icon-button compact" id="sidebarCloseButton" type="button" aria-label="關閉側欄">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
           <section class="mini-panel">
             <div class="mini-panel-header">
               <button class="icon-button compact" id="miniPrev" type="button" aria-label="上個月">
