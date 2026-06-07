@@ -36,10 +36,16 @@ const appState = {
     error: "",
     actionError: "",
     actionMessage: "",
+    calendarSectionExpanded: true,
+    playerSectionExpanded: true,
     draft: {
+      dateSelectionMode: "weekday_range",
       dateStart: "",
       dateEnd: "",
-      playerNames: ""
+      playerNames: "",
+      allowedWeekdays: [1, 2, 3, 4, 5, 6, 7],
+      selectedDates: new Set(),
+      selectedDatesMonth: toDateInput(startOfMonth(new Date())).slice(0, 7)
     }
   },
   playerAvailability: {
@@ -61,19 +67,38 @@ const appState = {
     selectedDates: new Set(),
     isSaving: false
   },
+  settings: {
+    notifyJoinRequests: false,
+    isLoading: false,
+    isSaving: false,
+    error: ""
+  },
   isSavingEvent: false,
   isDeletingEvent: false,
   isApplying: false,
+  isRequestingGmAccount: false,
   busyRequestIds: new Set()
 };
 
 const AVAILABILITY_QUERY_PARAM = "availability";
+const GM_FILTER_QUERY_PARAM = "gm";
 const TIME_SLOTS = [
   { key: "morning", label: "上午" },
   { key: "afternoon", label: "下午" },
   { key: "evening", label: "晚上" }
 ];
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: "一" },
+  { value: 2, label: "二" },
+  { value: 3, label: "三" },
+  { value: 4, label: "四" },
+  { value: 5, label: "五" },
+  { value: 6, label: "六" },
+  { value: 7, label: "日" }
+];
 const COMMON_SYSTEMS = ["龍與地下城 D&D", "克蘇魯的呼喚 CoC", "探索者協會 PF"];
+const GM_ACCOUNT_REQUEST_FUNCTION = "gm-account-request";
+const JOIN_REQUEST_NOTIFY_FUNCTION = "join-request-notify";
 
 
 const DEBUG = new URLSearchParams(window.location.search).has("debug");
@@ -178,11 +203,14 @@ const els = {
   gmFilter: $("#gmFilter"),
   availabilityEventFilter: $("#availabilityEventFilter"),
   openSeatsOnly: $("#openSeatsOnly"),
+  notifyJoinRequestsToggle: $("#notifyJoinRequestsToggle"),
+  notifyJoinRequestsStatus: $("#notifyJoinRequestsStatus"),
   sidebar: $("#sidebar"),
   sidebarBackdrop: $("#sidebarBackdrop"),
   sidebarCloseButton: $("#sidebarCloseButton"),
   menuToggle: $("#menuToggle"),
   requestList: $("#requestList"),
+  gmCalendarLinkButton: $("#gmCalendarLinkButton"),
   detailRequestsPanel: $("#detailRequestsPanel"),
   detailRequests: $("#detailRequests"),
   detailLayout: $(".detail-layout"),
@@ -193,6 +221,7 @@ const els = {
   eventForm: $("#eventForm"),
   loginForm: $("#loginForm"),
   passwordForm: $("#passwordForm"),
+  resetPasswordButton: $("#resetPasswordButton"),
   applyForm: $("#applyForm"),
   applyPanel: $(".apply-panel"),
   applySubmitButton: $("#applySubmitButton"),
@@ -202,6 +231,10 @@ const els = {
   copyToolbar: $("#copyToolbar"),
   playerAvailabilityPage: $("#playerAvailabilityPage"),
   loginButton: $("#loginButton"),
+  gmAccountRequestButton: $("#gmAccountRequestButton"),
+  gmAccountRequestDialog: $("#gmAccountRequestDialog"),
+  gmAccountRequestForm: $("#gmAccountRequestForm"),
+  gmAccountRequestSubmitButton: $("#gmAccountRequestSubmitButton"),
   changePasswordButton: $("#changePasswordButton"),
   newEventButton: $("#newEventButton"),
   deleteEventButton: $("#deleteEventButton"),
@@ -212,6 +245,8 @@ const els = {
   copyCountInput: $("#copyCountInput"),
   copyCountSubmitButton: $("#copyCountSubmitButton"),
   detailLineLink: $("#detailLineLink"),
+  externalLinkConfirmDialog: $("#externalLinkConfirmDialog"),
+  externalLinkPreview: $("#externalLinkPreview"),
   detailDeleteEventButton: $("#detailDeleteEventButton"),
   confirmDialog: $("#confirmDialog"),
   confirmEyebrow: $("#confirmEyebrow"),
@@ -223,6 +258,7 @@ const els = {
 };
 
 let pendingConfirmResolver = null;
+let pendingExternalLinkResolver = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -245,12 +281,16 @@ async function init() {
     supabase.auth.onAuthStateChange((authEvent, session) => {
       if (authEvent === "INITIAL_SESSION") return;
       scheduleAuthRefresh(session, authEvent);
+      if (authEvent === "PASSWORD_RECOVERY") {
+        window.setTimeout(() => openPasswordDialog("請設定新的登入密碼。"), 0);
+      }
     });
   } else {
     showStatus("尚未連接 Supabase，現在顯示本機示範資料。部署前請設定 SUPABASE_URL 與 SUPABASE_ANON_KEY。");
   }
 
   await loadData();
+  applyInitialGmFilterFromUrl();
   render();
 }
 
@@ -352,7 +392,10 @@ function bindControls() {
     renderMiniCalendar();
     renderCalendarSurface();
   });
+  els.notifyJoinRequestsToggle?.addEventListener("change", handleNotifyJoinRequestsToggle);
+  els.gmCalendarLinkButton?.addEventListener("click", copyGmCalendarLink);
   els.loginButton.addEventListener("click", handleLoginButton);
+  els.gmAccountRequestButton?.addEventListener("click", openGmAccountRequestDialog);
   els.newEventButton.addEventListener("click", () => openEventForm({ event_date: toDateInput(appState.currentDate) }));
   els.changePasswordButton.addEventListener("click", openPasswordDialog);
   els.eventForm.addEventListener("submit", handleEventSubmit);
@@ -360,6 +403,8 @@ function bindControls() {
   $("#eventCommonSystem").addEventListener("change", () => syncEventSystemControl({ carryActiveValue: true }));
   els.deleteEventButton.addEventListener("click", () => handleDeleteEvent());
   els.loginForm.addEventListener("submit", handleLogin);
+  els.resetPasswordButton?.addEventListener("click", handlePasswordResetRequest);
+  els.gmAccountRequestForm?.addEventListener("submit", handleGmAccountRequestSubmit);
   els.passwordForm.addEventListener("submit", handlePasswordUpdate);
   els.applyForm.addEventListener("submit", handleApply);
   els.copyEventButton?.addEventListener("click", handleCopyEventButton);
@@ -383,6 +428,15 @@ function bindControls() {
     if (!appState.selectedEvent?.id) return;
     handleDeleteEvent(appState.selectedEvent.id);
   });
+  els.detailDialog.addEventListener("click", async (event) => {
+    const link = event.target.closest("[data-external-link]");
+    if (!link) return;
+    event.preventDefault();
+    const href = safeHttpUrl(link.getAttribute("href"));
+    if (!href) return;
+    const confirmed = await openExternalLinkConfirmDialog(href);
+    if (confirmed) window.open(href, "_blank", "noopener,noreferrer");
+  });
   els.confirmDialog?.addEventListener("click", (event) => {
     if (event.target === els.confirmDialog) {
       els.confirmDialog.close("cancel");
@@ -393,6 +447,16 @@ function bindControls() {
     pendingConfirmResolver = null;
     resolver?.(els.confirmDialog.returnValue === "confirm");
   });
+  els.externalLinkConfirmDialog?.addEventListener("click", (event) => {
+    if (event.target === els.externalLinkConfirmDialog) {
+      els.externalLinkConfirmDialog.close("cancel");
+    }
+  });
+  els.externalLinkConfirmDialog?.addEventListener("close", () => {
+    const resolver = pendingExternalLinkResolver;
+    pendingExternalLinkResolver = null;
+    resolver?.(els.externalLinkConfirmDialog.returnValue === "confirm");
+  });
   $$("[data-close-dialog]").forEach((button) => {
     button.addEventListener("click", () => {
       const dialog = document.getElementById(button.dataset.closeDialog);
@@ -402,6 +466,11 @@ function bindControls() {
   els.detailDialog.addEventListener("click", (event) => {
     if (event.target === els.detailDialog) {
       els.detailDialog.close();
+    }
+  });
+  els.gmAccountRequestDialog?.addEventListener("click", (event) => {
+    if (event.target === els.gmAccountRequestDialog) {
+      els.gmAccountRequestDialog.close();
     }
   });
   document.addEventListener("click", (event) => {
@@ -475,6 +544,12 @@ async function loadData() {
     return false;
   }
 
+  await loadAppSettings(role, requestId);
+  if (!isLatestLoadDataRequest(requestId)) {
+    debugLog("loadData.stale", { requestId, step: "settings" });
+    return false;
+  }
+
   appState.events = eventsWithNotes;
   appState.applications = appsResult.data ?? [];
   appState.ownerNames = ownerNames;
@@ -539,6 +614,34 @@ async function loadOwnerNames(events, requestId = debugState.loadDataRequestSeq)
   return fallback;
 }
 
+async function loadAppSettings(role = appState.role, requestId = debugState.loadDataRequestSeq) {
+  appState.settings.isLoading = true;
+  appState.settings.error = "";
+  if (!supabase) {
+    appState.settings.notifyJoinRequests = false;
+    appState.settings.isLoading = false;
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("app_settings")
+    .select("notify_join_requests")
+    .eq("id", "global")
+    .maybeSingle();
+
+  if (!isLatestLoadDataRequest(requestId)) return;
+
+  appState.settings.isLoading = false;
+  if (error) {
+    appState.settings.notifyJoinRequests = false;
+    appState.settings.error = "通知設定尚未載入，請確認已更新 Supabase schema。";
+    if (role === "admin") showStatus(`讀取通知設定失敗：${error.message}`);
+    return;
+  }
+
+  appState.settings.notifyJoinRequests = data?.notify_join_requests === true;
+}
+
 async function resolveRole() {
   if (!supabase || !appState.session?.user) return "guest";
   const { data: adminData, error: adminError } = await supabase
@@ -571,6 +674,9 @@ function render() {
   els.body.classList.toggle("is-admin", isStaff);
   els.body.classList.toggle("has-session", Boolean(appState.session));
   els.body.classList.toggle("is-copying", isCopyDateMode());
+  if (appState.session && els.gmAccountRequestDialog?.open) {
+    els.gmAccountRequestDialog.close();
+  }
   const loginLabel = appState.session ? "登出" : "管理登入";
   els.loginButton.innerHTML = appState.session
     ? '<i data-lucide="log-out"></i><span>登出</span>'
@@ -585,6 +691,7 @@ function render() {
   renderSystemFilter();
   renderGmFilter();
   renderAvailabilityEventFilter();
+  renderSettings();
   renderMiniCalendar();
   renderCalendarSurface();
   renderRequests();
@@ -615,7 +722,8 @@ function renderGmFilter() {
     gmMap.set(event.owner_user_id, ownerDisplayName(event));
   });
   const gms = Array.from(gmMap.entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-Hant"));
-  const current = els.gmFilter.value;
+  const current = appState.filters.gm || els.gmFilter.value;
+  const hasCurrent = Boolean(current && gms.some(([gmId]) => gmId === current));
   els.gmFilter.innerHTML = '<option value="">全部 GM</option>';
   gms.forEach(([gmId, gmName]) => {
     const option = document.createElement("option");
@@ -623,8 +731,46 @@ function renderGmFilter() {
     option.textContent = gmName;
     els.gmFilter.append(option);
   });
-  els.gmFilter.value = gms.some(([gmId]) => gmId === current) ? current : "";
+  if (current && !hasCurrent) {
+    const option = document.createElement("option");
+    option.value = current;
+    option.textContent = appState.ownerNames[current] ?? "GM專屬連結";
+    els.gmFilter.append(option);
+  }
+  els.gmFilter.value = current;
   appState.filters.gm = els.gmFilter.value;
+}
+
+function renderSettings() {
+  if (!els.notifyJoinRequestsToggle || !els.notifyJoinRequestsStatus) return;
+  const isAdmin = appState.role === "admin";
+  const state = appState.settings;
+  els.notifyJoinRequestsToggle.checked = state.notifyJoinRequests;
+  els.notifyJoinRequestsToggle.disabled = !supabase || !isAdmin || state.isLoading || state.isSaving;
+
+  if (!supabase) {
+    els.notifyJoinRequestsStatus.textContent = "本機示範模式不會寄出玩家申請通知。";
+    return;
+  }
+  if (!isAdmin) {
+    els.notifyJoinRequestsStatus.textContent = "";
+    return;
+  }
+  if (state.isLoading) {
+    els.notifyJoinRequestsStatus.textContent = "讀取通知設定中...";
+    return;
+  }
+  if (state.isSaving) {
+    els.notifyJoinRequestsStatus.textContent = "儲存通知設定中...";
+    return;
+  }
+  if (state.error) {
+    els.notifyJoinRequestsStatus.textContent = state.error;
+    return;
+  }
+  els.notifyJoinRequestsStatus.textContent = state.notifyJoinRequests
+    ? "已開啟。玩家送出申請後會寄通知信給站方。"
+    : "已關閉。玩家申請只會留在管理端，不會寄通知信。";
 }
 
 function renderCalendarSurface() {
@@ -873,9 +1019,7 @@ function createEventChip(event) {
   button.type = "button";
   button.classList.toggle("few", remainingSeats(event) > 0 && remainingSeats(event) <= 2);
   button.classList.toggle("full", remainingSeats(event) <= 0);
-  button.innerHTML = `<span class="time">${escapeHtml(formatTime(event.start_time))}</span><span class="title">${escapeHtml(
-    event.title
-  )}</span><span class="mobile-seat">${escapeHtml(seatPillText(event))}</span>`;
+  button.innerHTML = `<span class="title">${escapeHtml(event.title)},${escapeHtml(calendarChipSeatText(event))}</span>`;
   button.addEventListener("click", (clickEvent) => {
     clickEvent.stopPropagation();
     if (isCopyDateMode()) return;
@@ -938,7 +1082,7 @@ function openDetail(event) {
   $("#detailTitle").textContent = event.title;
   $("#detailWhen").textContent = eventDateTimeLabel(event);
   $("#detailWhere").innerHTML = mapUrl
-    ? `<a href="${escapeAttr(mapUrl)}" target="_blank" rel="noreferrer">${escapeHtml(event.location_name)}</a>`
+    ? `<a href="${escapeAttr(mapUrl)}" target="_blank" rel="noreferrer" data-external-link="map">${escapeHtml(event.location_name)}</a>`
     : escapeHtml(event.location_name);
   $("#detailHost").textContent = event.host_name;
   const ownerName = ownerDisplayName(event);
@@ -959,14 +1103,16 @@ function openDetail(event) {
   if (lineUrl) {
     els.detailLineLink.classList.remove("missing-link");
     els.detailLineLink.removeAttribute("aria-disabled");
-    els.detailLineLink.querySelector("span").innerHTML = "加入 Line 群組";
+    els.detailLineLink.querySelector("span").innerHTML = "加入團務群組";
     els.detailLineLink.href = lineUrl;
+    els.detailLineLink.dataset.externalLink = "line";
     els.detailLineLink.hidden = false;
   } else {
     els.detailLineLink.classList.add("missing-link");
     els.detailLineLink.setAttribute("aria-disabled", "true");
     els.detailLineLink.removeAttribute("href");
-    els.detailLineLink.querySelector("span").innerHTML = "<s>加入 Line 群組</s>";
+    delete els.detailLineLink.dataset.externalLink;
+    els.detailLineLink.querySelector("span").innerHTML = "<s>加入團務群組</s>";
     els.detailLineLink.hidden = false;
   }
 
@@ -991,6 +1137,20 @@ function openDetail(event) {
   $("#applicantPlayers").value = 1;
   els.detailDialog.showModal();
   seedIcons();
+}
+
+function openExternalLinkConfirmDialog(url) {
+  if (!els.externalLinkConfirmDialog) return Promise.resolve(window.confirm(`確定開啟此連結？\n${url}`));
+  if (els.externalLinkConfirmDialog.open) {
+    els.externalLinkConfirmDialog.close("cancel");
+  }
+  els.externalLinkConfirmDialog.returnValue = "";
+  if (els.externalLinkPreview) els.externalLinkPreview.value = url;
+  return new Promise((resolve) => {
+    pendingExternalLinkResolver = resolve;
+    els.externalLinkConfirmDialog.showModal();
+    seedIcons();
+  });
 }
 
 function toggleViewSurface(element, visible) {
@@ -1079,17 +1239,26 @@ function renderCreateAvailabilityPoll(event) {
   const state = appState.availability;
   const defaultStart = state.draft.dateStart || event.event_date || toDateInput(appState.currentDate);
   const defaultEnd = state.draft.dateEnd || event.event_date || toDateInput(appState.currentDate);
+  const defaultWeekdays = state.draft.allowedWeekdays?.length ? state.draft.allowedWeekdays : [1, 2, 3, 4, 5, 6, 7];
+  const dateSelectionMode = state.draft.dateSelectionMode === "selected_dates" ? "selected_dates" : "weekday_range";
+  if (!state.draft.selectedDatesMonth) state.draft.selectedDatesMonth = defaultStart.slice(0, 7);
   els.availabilityPanelContent.innerHTML = `
     <form class="availability-create-form" id="availabilityCreateForm">
+      <div class="availability-mode-field full">
+        <span class="field-label">日期選擇方式</span>
+        <div class="availability-mode-options" role="radiogroup" aria-label="日期選擇方式">
+          <label class="mode-toggle">
+            <input type="radio" name="availabilityDateSelectionMode" value="weekday_range" ${dateSelectionMode === "weekday_range" ? "checked" : ""} />
+            <span>區間＋星期</span>
+          </label>
+          <label class="mode-toggle">
+            <input type="radio" name="availabilityDateSelectionMode" value="selected_dates" ${dateSelectionMode === "selected_dates" ? "checked" : ""} />
+            <span>月曆手選日期</span>
+          </label>
+        </div>
+      </div>
       <div class="form-grid compact-form-grid">
-        <label>
-          <span>開始日期</span>
-          <input id="availabilityDateStart" type="date" value="${escapeAttr(defaultStart)}" required />
-        </label>
-        <label>
-          <span>結束日期</span>
-          <input id="availabilityDateEnd" type="date" value="${escapeAttr(defaultEnd)}" required />
-        </label>
+        ${availabilityDateSelectionFields(dateSelectionMode, defaultStart, defaultEnd, defaultWeekdays)}
         <label class="wide">
           <span>玩家名單（每行一位）</span>
           <textarea id="availabilityPlayerNames" rows="5" maxlength="2000" placeholder="阿明&#10;小玉&#10;Chris" required>${escapeHtml(
@@ -1109,13 +1278,144 @@ function renderCreateAvailabilityPoll(event) {
       </div>
     </form>
   `;
-  els.availabilityPanelContent.querySelector("#availabilityCreateForm")?.addEventListener("submit", handleCreateAvailabilityPoll);
+  bindCreateAvailabilityPollForm();
   seedIcons();
 }
+
+function availabilityDateSelectionFields(mode, defaultStart, defaultEnd, defaultWeekdays) {
+  if (mode === "selected_dates") return availabilitySelectedDatesPicker();
+  return `
+    <label>
+      <span>開始日期</span>
+      <input id="availabilityDateStart" type="date" value="${escapeAttr(defaultStart)}" required />
+    </label>
+    <label>
+      <span>結束日期</span>
+      <input id="availabilityDateEnd" type="date" value="${escapeAttr(defaultEnd)}" required />
+    </label>
+    <label class="wide">
+      <span>可選星期</span>
+      <div>
+        ${WEEKDAY_OPTIONS.map((weekday) => `
+          <label class="slot-checkbox">
+            <input type="checkbox" data-availability-weekday="${weekday.value}" ${defaultWeekdays.includes(weekday.value) ? "checked" : ""} />
+            <span>週${weekday.label}</span>
+          </label>
+        `).join("")}
+      </div>
+    </label>
+  `;
+}
+
+function availabilitySelectedDatesPicker() {
+  const draft = appState.availability.draft;
+  const selectedDates = normalizeDateKeys(Array.from(draft.selectedDates ?? []));
+  const selectedSet = new Set(selectedDates);
+  const month = draft.selectedDatesMonth || selectedDates[0]?.slice(0, 7) || toDateInput(appState.currentDate).slice(0, 7);
+  const first = parseDate(`${month}-01`);
+  const start = addDays(first, -first.getDay());
+  const end = addDays(start, 41);
+  const cells = [];
+
+  for (let day = new Date(start); day <= end; day = addDays(day, 1)) {
+    const key = toDateInput(day);
+    const inMonth = key.startsWith(month);
+    const selected = selectedSet.has(key);
+    const weekday = ["日", "一", "二", "三", "四", "五", "六"][day.getDay()];
+    cells.push(`
+      <button
+        type="button"
+        class="player-cal-day availability-pick-day ${inMonth ? "" : "muted-day"} ${selected ? "has-choice" : ""}"
+        data-availability-pick-date="${escapeAttr(key)}"
+        aria-pressed="${selected ? "true" : "false"}"
+        aria-label="${escapeAttr(`${key} (${weekday})${selected ? " 已選" : ""}`)}"
+      >
+        <span class="player-cal-date">
+          <span>${day.getDate()}</span>
+          <span class="player-cal-weekday">(${weekday})</span>
+        </span>
+        ${selected ? '<small class="player-cal-slots"><span class="player-cal-slot">已選</span></small>' : ""}
+      </button>
+    `);
+  }
+
+  return `
+    <div class="availability-date-picker wide">
+      <div class="player-cal-head">
+        <button type="button" class="icon-button" id="availabilityPrevMonth" aria-label="上個月">◀</button>
+        <strong>${escapeHtml(month)}</strong>
+        <button type="button" class="icon-button" id="availabilityNextMonth" aria-label="下個月">▶</button>
+      </div>
+      <div class="availability-weekdays" aria-hidden="true">
+        <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+      </div>
+      <div class="player-cal-grid">${cells.join("")}</div>
+      <div class="availability-selected-dates-summary">
+        <strong>已選 ${selectedDates.length} 天</strong>
+        ${selectedDates.length ? `<span>${selectedDates.map((date) => escapeHtml(formatDateWithWeekday(parseDate(date)))).join("、")}</span>` : '<span class="muted">請在月曆上點選 GM 可開團日期。</span>'}
+      </div>
+    </div>
+  `;
+}
+
+function bindCreateAvailabilityPollForm() {
+  const form = els.availabilityPanelContent.querySelector("#availabilityCreateForm");
+  form?.addEventListener("submit", handleCreateAvailabilityPoll);
+  form?.querySelectorAll('input[name="availabilityDateSelectionMode"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      syncAvailabilityDraftFromForm();
+      appState.availability.draft.dateSelectionMode = input.value;
+      appState.availability.actionError = "";
+      renderAvailabilityPanel(appState.selectedEvent);
+    });
+  });
+  form?.querySelectorAll("#availabilityDateStart, #availabilityDateEnd, #availabilityPlayerNames, [data-availability-weekday]").forEach((input) => {
+    input.addEventListener("change", syncAvailabilityDraftFromForm);
+    input.addEventListener("input", syncAvailabilityDraftFromForm);
+  });
+  form?.querySelector("#availabilityPrevMonth")?.addEventListener("click", () => {
+    syncAvailabilityDraftFromForm();
+    const currentMonth = appState.availability.draft.selectedDatesMonth || toDateInput(appState.currentDate).slice(0, 7);
+    appState.availability.draft.selectedDatesMonth = toDateInput(addMonths(parseDate(`${currentMonth}-01`), -1)).slice(0, 7);
+    renderAvailabilityPanel(appState.selectedEvent);
+  });
+  form?.querySelector("#availabilityNextMonth")?.addEventListener("click", () => {
+    syncAvailabilityDraftFromForm();
+    const currentMonth = appState.availability.draft.selectedDatesMonth || toDateInput(appState.currentDate).slice(0, 7);
+    appState.availability.draft.selectedDatesMonth = toDateInput(addMonths(parseDate(`${currentMonth}-01`), 1)).slice(0, 7);
+    renderAvailabilityPanel(appState.selectedEvent);
+  });
+  form?.querySelectorAll("[data-availability-pick-date]").forEach((button) => {
+    button.addEventListener("click", () => {
+      syncAvailabilityDraftFromForm();
+      const selectedDates = appState.availability.draft.selectedDates;
+      const dateKey = button.dataset.availabilityPickDate;
+      if (selectedDates.has(dateKey)) selectedDates.delete(dateKey);
+      else selectedDates.add(dateKey);
+      appState.availability.actionError = "";
+      renderAvailabilityPanel(appState.selectedEvent);
+    });
+  });
+}
+
+function syncAvailabilityDraftFromForm() {
+  const form = els.availabilityPanelContent?.querySelector("#availabilityCreateForm");
+  if (!form) return;
+  const draft = appState.availability.draft;
+  draft.dateSelectionMode = form.querySelector('input[name="availabilityDateSelectionMode"]:checked')?.value ?? draft.dateSelectionMode;
+  draft.dateStart = form.querySelector("#availabilityDateStart")?.value ?? draft.dateStart;
+  draft.dateEnd = form.querySelector("#availabilityDateEnd")?.value ?? draft.dateEnd;
+  draft.playerNames = form.querySelector("#availabilityPlayerNames")?.value ?? draft.playerNames;
+  draft.allowedWeekdays = Array.from(form.querySelectorAll("[data-availability-weekday]:checked"))
+    .map((input) => Number(input.dataset.availabilityWeekday))
+    .filter((value) => Number.isInteger(value) && value >= 1 && value <= 7);
+}
+
 
 function renderExistingAvailabilityPoll(event, data) {
   const poll = data.poll;
   const players = data.players ?? [];
+  const allLinksText = buildAvailabilityLinksText(players);
   const selectedPlayers = selectedAvailabilityPlayers(players);
   const submittedPlayers = players.filter((player) => player.submitted_at);
   const pendingPlayers = players.filter((player) => !player.submitted_at);
@@ -1124,8 +1424,8 @@ function renderExistingAvailabilityPoll(event, data) {
   els.availabilityPanelContent.innerHTML = `
     <div class="availability-toolbar">
       <div>
-        <p class="eyebrow">調查區間</p>
-        <strong>${escapeHtml(formatDateRange(poll.date_start, poll.date_end))}</strong>
+        <p class="eyebrow">${escapeHtml(availabilityPollModeLabel(poll))}</p>
+        <strong>${escapeHtml(availabilityPollDateSummary(poll))}</strong>
         <p class="muted">${submittedPlayers.length} / ${players.length} 位已提交</p>
       </div>
       <div class="availability-toolbar-actions">
@@ -1148,7 +1448,13 @@ function renderExistingAvailabilityPoll(event, data) {
           <p class="eyebrow">已產生</p>
           <h4>玩家私人連結</h4>
         </div>
-        <span class="pill open">${players.length} 組連結</span>
+        <div class="availability-toolbar-actions">
+          <span class="pill open">${players.length} 組連結</span>
+          <button class="ghost-button" type="button" data-copy-all-links>
+            <i data-lucide="copy"></i>
+            <span>複製全部</span>
+          </button>
+        </div>
       </div>
       ${players.map((player) => availabilityLinkRow(player)).join("")}
     </div>
@@ -1175,9 +1481,13 @@ function renderExistingAvailabilityPoll(event, data) {
       </section>
     </div>
 
-    <div class="availability-filter">
+    <div class="availability-section">
+      <button class="availability-section-toggle" type="button" data-toggle-availability-calendar aria-expanded="${appState.availability.calendarSectionExpanded ? "true" : "false"}">
+        <h4>日期檢視${appState.availability.calendarSectionExpanded ? "▾" : "▸"}</h4>
+      </button>
+      ${appState.availability.calendarSectionExpanded ? `
+      <div class="availability-filter">
       <div>
-        <h4>日曆檢視</h4>
         <p class="muted">未手動篩選時顯示全部玩家；可勾選單一或多位玩家檢查可跑時段。</p>
       </div>
       <button class="mini-action" type="button" data-availability-all>全部玩家</button>
@@ -1194,12 +1504,19 @@ function renderExistingAvailabilityPoll(event, data) {
           .join("")}
       </div>
     </div>
-
     ${availabilityCalendar(summary.calendarDays, selectedPlayers.length)}
+    ` : ""}
+    </div>
 
-    <div class="availability-player-list">
-      <h4>玩家填寫內容</h4>
+    <div class="availability-section">
+      <button class="availability-section-toggle" type="button" data-toggle-availability-player aria-expanded="${appState.availability.playerSectionExpanded ? "true" : "false"}">
+        <h4>玩家填寫內容${appState.availability.playerSectionExpanded ? "▾" : "▸"}</h4>
+      </button>
+      ${appState.availability.playerSectionExpanded ? `
+      <div class="availability-player-list">
       ${players.map((player) => playerAvailabilitySummary(player)).join("")}
+      </div>
+      ` : ""}
     </div>
   `;
 
@@ -1211,6 +1528,14 @@ function renderExistingAvailabilityPoll(event, data) {
   });
   els.availabilityPanelContent.querySelector("[data-availability-all]")?.addEventListener("click", () => {
     appState.availability.selectedPlayerIds = [];
+    renderAvailabilityPanel(event);
+  });
+  els.availabilityPanelContent.querySelector("[data-toggle-availability-calendar]")?.addEventListener("click", () => {
+    appState.availability.calendarSectionExpanded = !appState.availability.calendarSectionExpanded;
+    renderAvailabilityPanel(event);
+  });
+  els.availabilityPanelContent.querySelector("[data-toggle-availability-player]")?.addEventListener("click", () => {
+    appState.availability.playerSectionExpanded = !appState.availability.playerSectionExpanded;
     renderAvailabilityPanel(event);
   });
   const filterCheckboxes = els.availabilityPanelContent.querySelectorAll("[data-filter-player]");
@@ -1225,7 +1550,12 @@ function renderExistingAvailabilityPoll(event, data) {
     });
   });
   els.availabilityPanelContent.querySelectorAll("[data-copy-token]").forEach((button) => {
-    button.addEventListener("click", () => copyAvailabilityLink(button.dataset.copyToken, button));
+    button.addEventListener("click", () =>
+      copyAvailabilityLink(button.dataset.copyToken, button.dataset.copyName ?? "", button)
+    );
+  });
+  els.availabilityPanelContent.querySelector("[data-copy-all-links]")?.addEventListener("click", (event) => {
+    copyAvailabilityLinksText(allLinksText, event.currentTarget);
   });
   els.availabilityPanelContent.querySelectorAll("[data-link-input]").forEach((input) => {
     input.addEventListener("click", () => input.select());
@@ -1246,7 +1576,7 @@ function availabilityLinkRow(player) {
         </label>
       </div>
       <div class="availability-link-actions">
-        <button class="ghost-button" type="button" data-copy-token="${escapeAttr(player.personal_token)}">
+        <button class="ghost-button" type="button" data-copy-token="${escapeAttr(player.personal_token)}" data-copy-name="${escapeAttr(player.display_name)}">
           <i data-lucide="copy"></i>
           <span>複製連結</span>
         </button>
@@ -1421,26 +1751,41 @@ async function handleCreateAvailabilityPoll(event) {
     return;
   }
 
-  const dateStart = $("#availabilityDateStart").value;
-  const dateEnd = $("#availabilityDateEnd").value;
-  const playerNamesText = $("#availabilityPlayerNames").value;
-  appState.availability.draft = {
-    dateStart,
-    dateEnd,
-    playerNames: playerNamesText
-  };
+  syncAvailabilityDraftFromForm();
+  const draft = appState.availability.draft;
+  const dateSelectionMode = draft.dateSelectionMode === "selected_dates" ? "selected_dates" : "weekday_range";
+  const selectedDates = normalizeDateKeys(Array.from(draft.selectedDates ?? []));
+  const dateStart = dateSelectionMode === "selected_dates" ? selectedDates[0] ?? "" : draft.dateStart;
+  const dateEnd = dateSelectionMode === "selected_dates" ? selectedDates[selectedDates.length - 1] ?? "" : draft.dateEnd;
+  const playerNamesText = draft.playerNames;
+  const allowedWeekdays = dateSelectionMode === "selected_dates"
+    ? [1, 2, 3, 4, 5, 6, 7]
+    : (draft.allowedWeekdays ?? []).filter((value) => Number.isInteger(value) && value >= 1 && value <= 7);
   appState.availability.actionError = "";
   appState.availability.actionMessage = "";
 
-  const names = $("#availabilityPlayerNames").value
+  const names = playerNamesText
     .split(/\r?\n/)
     .map((name) => name.trim())
     .filter(Boolean);
 
-  if (!dateStart || !dateEnd || dateStart > dateEnd) {
-    appState.availability.actionError = "建立調查失敗：日期區間不正確。";
-    renderAvailabilityPanel(selectedEvent);
-    return;
+  if (dateSelectionMode === "selected_dates") {
+    if (!selectedDates.length) {
+      appState.availability.actionError = "建立調查失敗：請至少在月曆上選擇一個日期。";
+      renderAvailabilityPanel(selectedEvent);
+      return;
+    }
+  } else {
+    if (!dateStart || !dateEnd || dateStart > dateEnd) {
+      appState.availability.actionError = "建立調查失敗：日期區間不正確。";
+      renderAvailabilityPanel(selectedEvent);
+      return;
+    }
+    if (!allowedWeekdays.length) {
+      appState.availability.actionError = "建立調查失敗：請至少選擇一天星期。";
+      renderAvailabilityPanel(selectedEvent);
+      return;
+    }
   }
   if (!names.length) {
     appState.availability.actionError = "建立調查失敗：請至少輸入一位玩家。";
@@ -1457,12 +1802,19 @@ async function handleCreateAvailabilityPoll(event) {
   renderAvailabilityPanel(selectedEvent);
 
   try {
-    const { data, error } = await supabase.rpc("create_availability_poll", {
+    const rpcPayload = {
       target_event_id: selectedEvent.id,
       poll_date_start: dateStart,
       poll_date_end: dateEnd,
-      player_names: names
-    });
+      player_names: names,
+      poll_allowed_weekdays: allowedWeekdays
+    };
+    if (dateSelectionMode === "selected_dates") {
+      rpcPayload.poll_date_selection_mode = dateSelectionMode;
+      rpcPayload.poll_selected_dates = selectedDates;
+    }
+
+    const { data, error } = await supabase.rpc("create_availability_poll", rpcPayload);
 
     if (error) {
       appState.availability.actionError = toReadableError(error, "建立可跑團調查");
@@ -1473,7 +1825,7 @@ async function handleCreateAvailabilityPoll(event) {
 
     appState.availability.data = withAvailabilitySummary(data);
     appState.availability.selectedPlayerIds = [];
-    appState.availability.draft = { dateStart: "", dateEnd: "", playerNames: "" };
+    appState.availability.draft = createDefaultAvailabilityDraft();
     appState.availability.actionError = "";
     appState.availability.actionMessage = "調查已建立，玩家私人連結就在下方。";
     resetAvailabilityDashboardOptions();
@@ -1492,6 +1844,7 @@ async function handleCreateAvailabilityPoll(event) {
     renderAvailabilityPanel(selectedEvent);
   }
 }
+
 
 async function handleClearAvailabilityPoll(eventId) {
   if (appState.availability.isClearing) return;
@@ -1529,16 +1882,32 @@ async function handleClearAvailabilityPoll(eventId) {
   }
 }
 
-async function copyAvailabilityLink(token, button) {
+async function copyAvailabilityLink(token, playerName, button) {
   const link = availabilityPersonalLink(token);
+  const linkText = `${playerName}： ${link}`;
+  await copyAvailabilityLinksText(linkText, button, "玩家私人連結已複製。");
+}
+
+function buildAvailabilityLinkText(playerName, token) {
+  const link = availabilityPersonalLink(token);
+  return `${playerName}\n${link}`;
+}
+
+function buildAvailabilityLinksText(players) {
+  return players
+    .map((player) => buildAvailabilityLinkText(player.display_name, player.personal_token))
+    .join("\n\n");
+}
+
+async function copyAvailabilityLinksText(text, button, successMessage = "玩家私人連結已複製。") {
   const label = button.querySelector("span");
   const previous = label?.textContent ?? "複製";
   button.disabled = true;
   if (label) label.textContent = "複製中...";
   try {
-    await navigator.clipboard.writeText(link);
+    await navigator.clipboard.writeText(text);
     if (label) label.textContent = "已複製";
-    showStatus("玩家私人連結已複製。", "success");
+    showStatus(successMessage, "success");
     window.setTimeout(() => {
       button.disabled = false;
       if (label) label.textContent = previous;
@@ -1546,35 +1915,60 @@ async function copyAvailabilityLink(token, button) {
   } catch {
     button.disabled = false;
     if (label) label.textContent = previous;
-    window.prompt("無法直接複製，請手動複製這個連結：", link);
+    window.prompt("無法直接複製，請手動複製以下內容：", text);
   }
 }
 
 function createRequestItem(request, compact) {
   const item = document.createElement("article");
   item.className = "request-item";
-  const eventTitle = request.events?.title ?? eventById(request.event_id)?.title ?? "團務";
+  const requestEvent = eventForRequest(request);
+  const eventTitle = requestEvent?.title ?? "團務";
+  const eventMeta = requestEvent ? eventDateTimeLabel(requestEvent) : "日期時間未提供";
   const requestBusy = isRequestBusy(request.id);
   item.innerHTML = `
     <header>
       <strong>${escapeHtml(request.applicant_name)}</strong>
       <span class="pill">${escapeHtml(statusText(request.status))}</span>
     </header>
-    ${compact ? `<p>${escapeHtml(eventTitle)}</p>` : ""}
+    ${
+      compact
+        ? `<div class="request-event-context">
+            <p class="request-event-title">${escapeHtml(eventTitle)}</p>
+            <p class="request-event-meta">${escapeHtml(eventMeta)}</p>
+          </div>`
+        : ""
+    }
     <p>提出時間：${escapeHtml(request.time_label ?? formatRequestTime(request.created_at))}</p>
     <p>${escapeHtml(request.contact_info)} · ${Number(request.players_count)} 人</p>
     ${request.note ? `<p>${escapeHtml(request.note)}</p>` : ""}
     <div class="request-actions">
+      ${compact ? `<button class="mini-action primary" type="button" data-action="view-event">查看團務</button>` : ""}
       <button class="mini-action" type="button" data-status="approved" ${requestBusy ? "disabled" : ""}>核准</button>
       <button class="mini-action" type="button" data-action="delete" ${requestBusy ? "disabled" : ""}>刪除</button>
       <button class="mini-action" type="button" data-status="declined" ${requestBusy ? "disabled" : ""}>婉拒</button>
     </div>
   `;
+  item.querySelector('[data-action="view-event"]')?.addEventListener("click", () => openRequestEventDetail(request));
   item.querySelectorAll("[data-status]").forEach((button) => {
     button.addEventListener("click", () => updateRequestStatus(request.id, button.dataset.status));
   });
   item.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteRequest(request.id));
   return item;
+}
+
+function openRequestEventDetail(request) {
+  const event = eventForRequest(request);
+  if (!event) {
+    showStatus("找不到這筆申請對應的團務。");
+    return;
+  }
+  if (!canManageEvent(event)) {
+    showStatus("你沒有權限查看這筆申請對應的團務。");
+    return;
+  }
+  setSidebarOpen(false);
+  openDetail(event);
 }
 
 function openEventForm(event = {}) {
@@ -1680,6 +2074,9 @@ function setEventDeleting(isDeleting) {
     const detailDeleteLabel = els.detailDeleteEventButton.querySelector("span");
     if (detailDeleteLabel) detailDeleteLabel.textContent = isDeleting ? "刪除中..." : "刪除";
   }
+  document.querySelectorAll('[data-action="delete-event"]').forEach((button) => {
+    button.disabled = isDeleting;
+  });
   const submitButton = els.eventForm.querySelector('button[type="submit"]');
   if (submitButton) submitButton.disabled = isDeleting || appState.isSavingEvent;
 }
@@ -2199,7 +2596,9 @@ async function handleApply(event) {
   setApplySubmitting(true);
 
   try {
+    const requestId = crypto.randomUUID();
     const payload = {
+      id: requestId,
       event_id: appState.selectedEvent.id,
       applicant_name: $("#applicantName").value.trim(),
       contact_info: $("#applicantContact").value.trim(),
@@ -2209,21 +2608,28 @@ async function handleApply(event) {
       status: "pending"
     };
 
+    let notificationError = "";
     if (supabase) {
       const { error } = await supabase.from("join_requests").insert(payload);
       if (error) {
         showStatus(toReadableError(error, "送出申請"));
         return;
       }
+      if (shouldNotifyJoinRequests()) {
+        notificationError = await notifyJoinRequest(requestId);
+      }
     } else {
       const applications = readLocal("trpg-ka-applications", []);
-      applications.push({ id: crypto.randomUUID(), created_at: new Date().toISOString(), ...payload });
+      applications.push({ created_at: new Date().toISOString(), ...payload });
       writeLocal("trpg-ka-applications", applications);
     }
 
     els.applyForm.reset();
     $("#applicantPlayers").value = 1;
-    showStatus("已送出申請。");
+    showStatus(
+      notificationError ? "已送出申請，但通知信寄送失敗；管理員仍可在後台查看。" : "已送出申請。",
+      notificationError ? "warning" : "success"
+    );
     els.applyFeedbackDialog?.showModal();
     await loadData();
     render();
@@ -2231,6 +2637,69 @@ async function handleApply(event) {
     showStatus(toReadableError(error, "送出申請"));
   } finally {
     setApplySubmitting(false);
+  }
+}
+
+function shouldNotifyJoinRequests() {
+  return appState.settings.notifyJoinRequests === true;
+}
+
+async function notifyJoinRequest(requestId) {
+  if (!supabase || !requestId) return "";
+  try {
+    const { data, error } = await supabase.functions.invoke(JOIN_REQUEST_NOTIFY_FUNCTION, {
+      body: { requestId }
+    });
+    if (error) return await toReadableFunctionError(error, "寄送玩家申請通知");
+    if (!data?.ok) return await toReadableFunctionError({ message: data?.message || "通知信寄送失敗。" }, "寄送玩家申請通知");
+    return "";
+  } catch (error) {
+    return await toReadableFunctionError(error, "寄送玩家申請通知");
+  }
+}
+
+async function handleNotifyJoinRequestsToggle() {
+  if (!els.notifyJoinRequestsToggle) return;
+  if (appState.role !== "admin") {
+    els.notifyJoinRequestsToggle.checked = appState.settings.notifyJoinRequests;
+    showStatus("只有管理員可以修改通知設定。");
+    return;
+  }
+  if (!supabase) {
+    els.notifyJoinRequestsToggle.checked = false;
+    showStatus("本機示範模式無法修改通知設定。");
+    return;
+  }
+  if (appState.settings.isSaving) {
+    els.notifyJoinRequestsToggle.checked = appState.settings.notifyJoinRequests;
+    return;
+  }
+
+  const previousValue = appState.settings.notifyJoinRequests;
+  const nextValue = els.notifyJoinRequestsToggle.checked;
+  appState.settings.notifyJoinRequests = nextValue;
+  appState.settings.isSaving = true;
+  appState.settings.error = "";
+  renderSettings();
+
+  try {
+    const { data, error } = await supabase
+      .from("app_settings")
+      .upsert({ id: "global", notify_join_requests: nextValue }, { onConflict: "id" })
+      .select("notify_join_requests")
+      .maybeSingle();
+
+    if (error) throw error;
+
+    appState.settings.notifyJoinRequests = data?.notify_join_requests === true;
+    showStatus(appState.settings.notifyJoinRequests ? "玩家申請通知已開啟。" : "玩家申請通知已關閉。", "success");
+  } catch (error) {
+    appState.settings.notifyJoinRequests = previousValue;
+    appState.settings.error = "通知設定儲存失敗，請稍後再試。";
+    showStatus(toReadableError(error, "儲存通知設定"));
+  } finally {
+    appState.settings.isSaving = false;
+    renderSettings();
   }
 }
 
@@ -2275,10 +2744,19 @@ function toReadableError(error, action = "操作") {
     too_many_availability_players: `${action}失敗：玩家數量過多。`,
     availability_player_name_too_long: `${action}失敗：玩家名稱過長。`,
     invalid_availability_slots: `${action}失敗：時段資料格式不正確。`,
+    invalid_poll_weekdays: `${action}失敗：可選星期設定不正確。`,
+    invalid_poll_date_selection_mode: `${action}失敗：日期選擇方式不正確。`,
+    availability_selected_dates_required: `${action}失敗：請至少選擇一個可選日期。`,
+    too_many_availability_dates: `${action}失敗：可選日期數量過多。`,
+    slot_weekday_not_allowed: `${action}失敗：包含不可選星期的時段。`,
+    slot_date_not_allowed: `${action}失敗：包含未開放的指定日期。`,
     invalid_slot_date: `${action}失敗：時段日期格式不正確。`,
     invalid_slot_name: `${action}失敗：時段名稱不正確。`,
     slot_date_out_of_range: `${action}失敗：選取日期不在調查區間內。`
   };
+  if (lower.includes("could not find the function public.create_availability_poll") && lower.includes("poll_selected_dates")) {
+    return `${action}失敗：資料庫尚未套用月曆手選日期更新，請重新執行 Supabase schema.sql 並重新載入 schema cache。`;
+  }
   const knownKey = Object.keys(knownMessages).find((key) => lower.includes(key));
   if (knownKey) return knownMessages[knownKey];
   if (lower.includes("events_date_required_unless_undecided")) {
@@ -2296,6 +2774,137 @@ function toReadableError(error, action = "操作") {
   return `${action}失敗：${message}`;
 }
 
+async function toReadableFunctionError(error, action = "操作") {
+  const detail = await readFunctionErrorDetail(error);
+  const message = detail.message || error?.message || "未知錯誤";
+  const status = detail.status || error?.context?.status || "";
+  const knownMessages = {
+    server_not_configured: `${action}失敗：通知信服務尚未設定完整，請站方確認 Supabase Edge Function secrets。`,
+    email_delivery_failed: `${action}失敗：寄信服務無法送出，請站方確認 Resend API key、寄件信箱或網域驗證狀態。`,
+    missing_required_fields: `${action}失敗：請填寫主持名稱、E-mail 信箱與自我介紹。`,
+    invalid_email: `${action}失敗：E-mail 格式不正確。`,
+    invalid_json: `${action}失敗：申請資料格式不正確。`,
+    method_not_allowed: `${action}失敗：送出方式不正確。`,
+    request_not_found: `${action}失敗：找不到玩家申請資料。`,
+    notification_settings_unavailable: `${action}失敗：通知設定尚未可用，請站方確認 Supabase schema 已更新。`
+  };
+
+  if (knownMessages[message]) return knownMessages[message];
+  if (Number(status) === 404) return `${action}失敗：找不到通知信 Function，請站方確認 gm-account-request 已部署。`;
+  if (Number(status) === 401 || Number(status) === 403) {
+    return `${action}失敗：通知信 Function 拒絕請求，請站方確認 Supabase 設定。`;
+  }
+  if (String(error?.message || "").includes("non-2xx")) {
+    return `${action}失敗：通知信服務回傳錯誤${status ? `（HTTP ${status}）` : ""}，請站方查看 Supabase Function Logs。`;
+  }
+  return toReadableError({ ...error, message }, action);
+}
+
+async function readFunctionErrorDetail(error) {
+  const response = error?.context;
+  if (!response || typeof response !== "object") return {};
+  const status = response.status;
+  const readable = typeof response.clone === "function" ? response.clone() : response;
+
+  if (typeof readable.json === "function") {
+    try {
+      const body = await readable.json();
+      return { status, message: body?.message || body?.error || "" };
+    } catch {
+      // Fall through to text parsing below.
+    }
+  }
+
+  const textSource = typeof response.clone === "function" ? response.clone() : response;
+  if (typeof textSource.text === "function") {
+    try {
+      const text = await textSource.text();
+      return { status, message: text };
+    } catch {
+      return { status };
+    }
+  }
+
+  return { status };
+}
+
+
+function openGmAccountRequestDialog() {
+  if (appState.session) {
+    showStatus("你已經登入，不需要申請新的 GM 帳號。");
+    return;
+  }
+  if (!supabase) {
+    showStatus("尚未設定 Supabase 連線，暫時無法送出 GM 帳號申請。");
+    return;
+  }
+  $("#gmAccountRequestMessage").textContent = "";
+  els.gmAccountRequestForm.reset();
+  els.gmAccountRequestDialog.showModal();
+  seedIcons();
+}
+
+function setGmAccountRequestSubmitting(isSubmitting) {
+  appState.isRequestingGmAccount = isSubmitting;
+  if (!els.gmAccountRequestSubmitButton) return;
+  els.gmAccountRequestSubmitButton.disabled = isSubmitting;
+  const label = els.gmAccountRequestSubmitButton.querySelector("span");
+  if (label) label.textContent = isSubmitting ? "送出中..." : "送出申請";
+}
+
+async function handleGmAccountRequestSubmit(event) {
+  event.preventDefault();
+  $("#gmAccountRequestMessage").textContent = "";
+
+  if (appState.isRequestingGmAccount) return;
+  if (appState.session) {
+    $("#gmAccountRequestMessage").textContent = "你已經登入，不需要申請新的 GM 帳號。";
+    return;
+  }
+  if (!supabase) {
+    $("#gmAccountRequestMessage").textContent = "尚未設定 Supabase 連線。";
+    return;
+  }
+
+  const website = $("#gmRequestWebsite").value.trim();
+  if (website) {
+    els.gmAccountRequestDialog.close();
+    showStatus("GM 帳號申請已送出。", "success");
+    return;
+  }
+
+  const hostName = $("#gmRequestHostName").value.trim();
+  const email = $("#gmRequestEmail").value.trim();
+  const intro = $("#gmRequestIntro").value.trim();
+  if (!hostName || !email || !intro) {
+    $("#gmAccountRequestMessage").textContent = "請填寫主持名稱、E-mail 信箱與自我介紹。";
+    return;
+  }
+
+  setGmAccountRequestSubmitting(true);
+  try {
+    const { data, error } = await supabase.functions.invoke(GM_ACCOUNT_REQUEST_FUNCTION, {
+      body: {
+        hostName,
+        email,
+        intro,
+        pageUrl: window.location.href,
+        website
+      }
+    });
+    if (error) throw error;
+    if (!data?.ok) throw new Error(data?.message || "申請送出失敗。");
+
+    els.gmAccountRequestDialog.close();
+    showStatus("GM 帳號申請已送出，站方審核後會用 E-mail 聯絡你。", "success");
+  } catch (error) {
+    const message = await toReadableFunctionError(error, "送出 GM 帳號申請");
+    $("#gmAccountRequestMessage").textContent = message;
+    showStatus(message);
+  } finally {
+    setGmAccountRequestSubmitting(false);
+  }
+}
 
 function setLoginSubmitting(isSubmitting) {
   if (!els.loginForm) return;
@@ -2304,6 +2913,13 @@ function setLoginSubmitting(isSubmitting) {
   submitButton.disabled = isSubmitting;
   const label = submitButton.querySelector("span");
   if (label) label.textContent = isSubmitting ? "登入中..." : "登入";
+}
+
+function setPasswordResetSubmitting(isSubmitting) {
+  if (!els.resetPasswordButton) return;
+  els.resetPasswordButton.disabled = isSubmitting;
+  const label = els.resetPasswordButton.querySelector("span");
+  if (label) label.textContent = isSubmitting ? "寄送中..." : "忘記密碼 / 寄重設信";
 }
 
 function setPasswordSubmitting(isSubmitting) {
@@ -2325,6 +2941,7 @@ function setLogoutSubmitting(isSubmitting) {
 async function handleLogin(event) {
   event.preventDefault();
   $("#loginMessage").textContent = "";
+  $("#loginMessage").classList.remove("success-message");
 
   if (!supabase) {
     $("#loginMessage").textContent = "尚未設定 Supabase 連線。";
@@ -2354,6 +2971,45 @@ async function handleLogin(event) {
   }
 }
 
+async function handlePasswordResetRequest() {
+  $("#loginMessage").textContent = "";
+  $("#loginMessage").classList.remove("success-message");
+
+  if (!supabase) {
+    $("#loginMessage").textContent = "尚未設定 Supabase 連線。";
+    return;
+  }
+
+  const email = $("#loginEmail").value.trim();
+  if (!email) {
+    $("#loginMessage").textContent = "請先輸入要重設密碼的 Email。";
+    $("#loginEmail").focus();
+    return;
+  }
+
+  setPasswordResetSubmitting(true);
+  try {
+    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+
+    if (error) {
+      $("#loginMessage").textContent = error.message;
+      showStatus("重設密碼信寄送失敗，請稍後再試或聯絡站方。");
+      return;
+    }
+
+    $("#loginMessage").textContent = "重設密碼信已寄出，請到信箱點開連結後設定新密碼。";
+    $("#loginMessage").classList.add("success-message");
+    showStatus("重設密碼信已寄出，請到信箱點開連結後設定新密碼。", "success");
+  } catch (error) {
+    const message = toReadableError(error, "寄送重設密碼信");
+    $("#loginMessage").textContent = message;
+    showStatus(message);
+  } finally {
+    setPasswordResetSubmitting(false);
+  }
+}
+
 async function handleLoginButton() {
   if (appState.session && supabase) {
     const shouldLogout = window.confirm("確定要登出嗎？");
@@ -2377,15 +3033,17 @@ async function handleLoginButton() {
     }
     return;
   }
+  $("#loginMessage").classList.remove("success-message");
   els.loginDialog.showModal();
 }
 
-function openPasswordDialog() {
+function openPasswordDialog(message = "") {
   if (!appState.session) {
     showStatus("請先登入後再修改密碼。");
     return;
   }
-  $("#passwordMessage").textContent = "";
+  $("#passwordMessage").textContent = message;
+  $("#passwordMessage").classList.toggle("success-message", Boolean(message));
   els.passwordForm.reset();
   els.passwordDialog.showModal();
 }
@@ -2393,6 +3051,7 @@ function openPasswordDialog() {
 async function handlePasswordUpdate(event) {
   event.preventDefault();
   $("#passwordMessage").textContent = "";
+  $("#passwordMessage").classList.remove("success-message");
 
   if (!supabase || !appState.session) {
     $("#passwordMessage").textContent = "目前尚未登入。";
@@ -2496,7 +3155,7 @@ function renderPlayerAvailabilityPage() {
   }
 
   const data = state.data;
-  const dates = datesBetween(data.poll.date_start, data.poll.date_end);
+  const dates = availabilityPollDates(data.poll);
   els.playerAvailabilityPage.innerHTML = `
     <section class="player-card wide-player-card">
       <header class="player-page-header">
@@ -2519,14 +3178,14 @@ function renderPlayerAvailabilityPage() {
           <strong>${escapeHtml(formatEventContext(data.event))}</strong>
         </div>
         <div>
-          <span>可選區間</span>
-          <strong>${escapeHtml(formatDateRange(data.poll.date_start, data.poll.date_end))}</strong>
+          <span>可選日期</span>
+          <strong>${escapeHtml(availabilityPollDateSummary(data.poll))}</strong>
         </div>
       </div>
 
       <form id="playerAvailabilityForm" class="player-availability-form">
         <div class="player-toolbar">
-          <button class="ghost-button" type="button" id="playerMonthModeButton">月曆模式</button>
+          <button class="ghost-button" type="button" id="playerMonthModeButton">${state.viewMode === "calendar" ? "列表模式" : "月曆模式"}</button>
           <button class="primary-button" type="button" id="playerSaveCloseButton" ${state.isSaving ? "disabled" : ""}>
             <i data-lucide="save"></i><span>${state.isSaving ? "儲存中..." : "儲存並關閉"}</span>
           </button>
@@ -2921,7 +3580,7 @@ function buildAvailabilitySummary(players, selectedPlayers, poll) {
     .sort((a, b) => b.count - a.count || sortAvailabilityEntries(a, b))
     .slice(0, 12);
 
-  const calendarDays = datesBetween(poll.date_start, poll.date_end).map((dateKey) => {
+  const calendarDays = availabilityPollDates(poll).map((dateKey) => {
     const counts = {};
     const missing = {};
     TIME_SLOTS.forEach((slot) => {
@@ -2984,12 +3643,49 @@ function isAvailabilityLinkInvalid(error) {
   return (error?.message || "").toLowerCase().includes("availability_link_invalid");
 }
 
-function datesBetween(startDate, endDate) {
+function createDefaultAvailabilityDraft() {
+  return {
+    dateSelectionMode: "weekday_range",
+    dateStart: "",
+    dateEnd: "",
+    playerNames: "",
+    allowedWeekdays: [1, 2, 3, 4, 5, 6, 7],
+    selectedDates: new Set(),
+    selectedDatesMonth: toDateInput(startOfMonth(new Date())).slice(0, 7)
+  };
+}
+
+function normalizeDateKeys(dates) {
+  return Array.from(new Set((dates ?? []).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(String(date))).map(String))).sort();
+}
+
+function availabilityPollDates(poll) {
+  if (!poll) return [];
+  if (poll.date_selection_mode === "selected_dates") return normalizeDateKeys(poll.selected_dates ?? []);
+  return datesBetween(poll.date_start, poll.date_end, poll.allowed_weekdays);
+}
+
+function availabilityPollModeLabel(poll) {
+  return poll?.date_selection_mode === "selected_dates" ? "月曆手選日期" : "區間＋星期";
+}
+
+function availabilityPollDateSummary(poll) {
+  const dates = availabilityPollDates(poll);
+  if (poll?.date_selection_mode === "selected_dates") {
+    if (!dates.length) return "尚未設定可選日期";
+    return `${dates.length} 個指定日期（${formatDateRange(dates[0], dates[dates.length - 1])}）`;
+  }
+  return formatDateRange(poll.date_start, poll.date_end);
+}
+
+function datesBetween(startDate, endDate, allowedWeekdays = [1, 2, 3, 4, 5, 6, 7]) {
   const dates = [];
+  const allowed = new Set((allowedWeekdays?.length ? allowedWeekdays : [1, 2, 3, 4, 5, 6, 7]).map(Number));
   let cursor = parseDate(startDate);
   const end = parseDate(endDate);
   while (cursor <= end) {
-    dates.push(toDateInput(cursor));
+    const isoWeekday = cursor.getDay() === 0 ? 7 : cursor.getDay();
+    if (allowed.has(isoWeekday)) dates.push(toDateInput(cursor));
     cursor = addDays(cursor, 1);
   }
   return dates;
@@ -3022,6 +3718,36 @@ function eventLabelMarkup(event) {
   if (isHiddenEvent(event)) labels.push('<span class="event-label hidden-event">本團隱藏</span>');
   if (isRegistrationClosed(event)) labels.push('<span class="event-label registration-closed">關閉報名</span>');
   return labels.length ? `<span class="event-labels">${labels.join("")}</span>` : "";
+}
+
+function readInitialGmFilter() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get(GM_FILTER_QUERY_PARAM)?.trim() ?? "";
+}
+
+function applyInitialGmFilterFromUrl() {
+  const gmId = readInitialGmFilter();
+  if (!gmId) return;
+  appState.filters.gm = gmId;
+  appState.filters.availabilityEventId = "";
+}
+
+function gmCalendarLink(gmId) {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  url.searchParams.set(GM_FILTER_QUERY_PARAM, gmId);
+  return url.toString();
+}
+
+async function copyGmCalendarLink() {
+  const gmId = appState.filters.gm || appState.session?.user?.id || "";
+  if (!gmId) {
+    showStatus("請先登入或選擇 GM，才能產生專屬月曆連結。");
+    return;
+  }
+
+  await copyAvailabilityLinksText(gmCalendarLink(gmId), els.gmCalendarLinkButton, "GM專屬月曆連結已複製。");
 }
 
 function availabilityPersonalLink(token) {
@@ -3092,6 +3818,7 @@ function clearSelectedEvent() {
   appState.availability.error = "";
   appState.availability.actionError = "";
   appState.availability.actionMessage = "";
+  appState.availability.draft = createDefaultAvailabilityDraft();
   if (els.detailDialog?.open) els.detailDialog.close();
 }
 
@@ -3283,6 +4010,11 @@ function seatPill(event) {
 function seatPillText(event) {
   const remaining = remainingSeats(event);
   return remaining > 0 ? `餘 ${remaining}` : "額滿";
+}
+
+function calendarChipSeatText(event) {
+  const remaining = remainingSeats(event);
+  return remaining > 0 ? `餘${remaining}` : "額滿";
 }
 
 function statusText(status) {

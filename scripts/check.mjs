@@ -6,6 +6,7 @@ const files = [
   "public/styles.css",
   "public/app.js",
   "supabase/schema.sql",
+  "supabase/functions/gm-account-request/index.ts",
   "README.md"
 ];
 

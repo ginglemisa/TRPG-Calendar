@@ -59,11 +59,14 @@
           </button>
           <button class="ghost-button session-only" id="changePasswordButton" type="button">
             <i data-lucide="key-round"></i>
-            <span>修改密碼</span>
+            <span>改密碼</span>
           </button>
           <button class="ghost-button" id="loginButton" type="button" aria-label="管理登入" title="管理登入">
             <i data-lucide="log-in"></i>
             <span>管理登入</span>
+          </button>
+          <button class="ghost-button guest-only" id="gmAccountRequestButton" type="button">
+            <span>申請GM帳號</span>
           </button>
         </div>
       </header>
@@ -118,10 +121,26 @@
 
           <section class="filters-panel admin-only">
             <div class="section-heading">
+              <i data-lucide="settings"></i>
+              <h2>通知設定</h2>
+            </div>
+            <label class="toggle-row">
+              <input type="checkbox" id="notifyJoinRequestsToggle" />
+              <span>玩家申請時寄信通知站方</span>
+            </label>
+            <p class="muted setting-note" id="notifyJoinRequestsStatus"></p>
+          </section>
+
+          <section class="filters-panel admin-only">
+            <div class="section-heading">
               <i data-lucide="inbox"></i>
               <h2>待處理申請</h2>
             </div>
             <div class="request-list" id="requestList"></div>
+            <button class="ghost-button gm-calendar-link-button" id="gmCalendarLinkButton" type="button">
+              <i data-lucide="copy"></i>
+              <span>GM專屬月曆連結</span>
+            </button>
           </section>
         </aside>
 
@@ -414,6 +433,33 @@
       </form>
     </dialog>
 
+    <dialog class="modal small-modal" id="externalLinkConfirmDialog">
+      <form class="modal-card confirm-card external-link-confirm-card" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">外部連結確認</p>
+            <h2>即將開啟外部連結</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="externalLinkConfirmDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <p class="danger-text">⚠ 請確認此連結來源可信，再決定是否開啟，避免釣魚或惡意網站。</p>
+        <label>
+          <span>完整網址</span>
+          <input id="externalLinkPreview" type="text" readonly />
+        </label>
+        <div class="modal-actions">
+          <button class="ghost-button" type="submit" value="cancel">否</button>
+          <span class="spacer"></span>
+          <button class="danger-button" type="submit" value="confirm">
+            <i data-lucide="external-link"></i>
+            <span>是，開啟連結</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog class="modal" id="applyFeedbackDialog">
       <div class="modal-card">
         <div class="modal-header">
@@ -452,12 +498,55 @@
           <span>密碼</span>
           <input id="loginPassword" type="password" autocomplete="current-password" required />
         </label>
+        <p class="muted reset-password-help">忘記密碼不需要先登入：輸入 Email 後按「忘記密碼 / 寄重設信」，系統會寄出可設定新密碼的連結。</p>
         <p class="form-message" id="loginMessage"></p>
         <div class="modal-actions">
           <button class="ghost-button" type="button" data-close-dialog="loginDialog">取消</button>
+          <button class="ghost-button" id="resetPasswordButton" type="button">
+            <i data-lucide="mail"></i>
+            <span>忘記密碼 / 寄重設信</span>
+          </button>
           <button class="primary-button" type="submit">
             <i data-lucide="log-in"></i>
             <span>登入</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal account-request-modal" id="gmAccountRequestDialog">
+      <form class="modal-card account-request-form" id="gmAccountRequestForm" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">主持人帳號</p>
+            <h2>申請GM帳號</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="gmAccountRequestDialog" aria-label="關閉">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="request-honeypot" aria-hidden="true" inert>
+          <input id="gmRequestWebsite" type="text" tabindex="-1" autocomplete="off" aria-hidden="true" />
+        </div>
+        <label>
+          <span>主持名稱</span>
+          <input id="gmRequestHostName" type="text" maxlength="40" autocomplete="name" required />
+        </label>
+        <label>
+          <span>E-mail 信箱</span>
+          <input id="gmRequestEmail" type="email" maxlength="120" autocomplete="email" required />
+        </label>
+        <label>
+          <span>自我介紹</span>
+          <textarea id="gmRequestIntro" rows="8" maxlength="1200" required></textarea>
+        </label>
+        <p class="muted">送出後，站方會人工審核並用 E-mail 聯絡你。請不要在這裡填寫密碼。</p>
+        <p class="form-message" id="gmAccountRequestMessage"></p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="gmAccountRequestDialog">取消</button>
+          <button class="primary-button" id="gmAccountRequestSubmitButton" type="submit">
+            <i data-lucide="send"></i>
+            <span>送出申請</span>
           </button>
         </div>
       </form>
@@ -483,6 +572,7 @@
           <span>確認新密碼</span>
           <input id="confirmPassword" type="password" autocomplete="new-password" required />
         </label>
+        <p class="muted">若你是透過重設密碼信進來，請直接輸入新密碼；更新完成後即可用新密碼登入。</p>
         <p class="form-message" id="passwordMessage"></p>
         <div class="modal-actions">
           <button class="ghost-button" type="button" data-close-dialog="passwordDialog">取消</button>

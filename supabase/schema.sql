@@ -12,6 +12,16 @@ create table if not exists public.gms (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.app_settings (
+  id text primary key default 'global' check (id = 'global'),
+  notify_join_requests boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.app_settings (id, notify_join_requests)
+values ('global', false)
+on conflict (id) do nothing;
+
 create table if not exists public.events (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid not null references auth.users(id) on delete cascade,
@@ -121,10 +131,34 @@ create table if not exists public.availability_polls (
   owner_user_id uuid not null references auth.users(id) on delete cascade,
   date_start date not null,
   date_end date not null,
+  allowed_weekdays smallint[] not null default array[1,2,3,4,5,6,7]::smallint[],
+  date_selection_mode text not null default 'weekday_range' check (date_selection_mode in ('weekday_range', 'selected_dates')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (date_start <= date_end)
 );
+
+alter table public.availability_polls
+add column if not exists allowed_weekdays smallint[] not null default array[1,2,3,4,5,6,7]::smallint[];
+
+alter table public.availability_polls
+add column if not exists date_selection_mode text not null default 'weekday_range';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'availability_polls_date_selection_mode_check'
+      and conrelid = 'public.availability_polls'::regclass
+  ) then
+    alter table public.availability_polls
+      add constraint availability_polls_date_selection_mode_check
+      check (date_selection_mode in ('weekday_range', 'selected_dates'))
+      not valid;
+  end if;
+end;
+$$;
 
 create table if not exists public.availability_players (
   id uuid primary key default gen_random_uuid(),
@@ -145,6 +179,13 @@ create table if not exists public.availability_slots (
   unique (player_id, slot_date, slot)
 );
 
+create table if not exists public.availability_poll_dates (
+  poll_id uuid not null references public.availability_polls(id) on delete cascade,
+  available_date date not null,
+  created_at timestamptz not null default now(),
+  primary key (poll_id, available_date)
+);
+
 create index if not exists availability_polls_event_id_idx
 on public.availability_polls(event_id);
 
@@ -159,6 +200,9 @@ on public.availability_slots(player_id);
 
 create index if not exists availability_slots_slot_date_idx
 on public.availability_slots(slot_date);
+
+create index if not exists availability_poll_dates_available_date_idx
+on public.availability_poll_dates(available_date);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -193,6 +237,11 @@ for each row execute function public.set_updated_at();
 drop trigger if exists availability_players_set_updated_at on public.availability_players;
 create trigger availability_players_set_updated_at
 before update on public.availability_players
+for each row execute function public.set_updated_at();
+
+drop trigger if exists app_settings_set_updated_at on public.app_settings;
+create trigger app_settings_set_updated_at
+before update on public.app_settings
 for each row execute function public.set_updated_at();
 
 create or replace function public.keep_event_owner_user_id()
@@ -341,6 +390,7 @@ declare
   target_event public.events%rowtype;
   poll_row public.availability_polls%rowtype;
   players_json jsonb := '[]'::jsonb;
+  selected_dates_json jsonb := '[]'::jsonb;
 begin
   select *
   into target_event
@@ -410,6 +460,11 @@ begin
   from public.availability_players
   where availability_players.poll_id = poll_row.id;
 
+  select coalesce(jsonb_agg(availability_poll_dates.available_date order by availability_poll_dates.available_date), '[]'::jsonb)
+  into selected_dates_json
+  from public.availability_poll_dates
+  where availability_poll_dates.poll_id = poll_row.id;
+
   return jsonb_build_object(
     'event', jsonb_build_object(
       'id', target_event.id,
@@ -427,6 +482,9 @@ begin
       'event_id', poll_row.event_id,
       'date_start', poll_row.date_start,
       'date_end', poll_row.date_end,
+      'allowed_weekdays', poll_row.allowed_weekdays,
+      'date_selection_mode', poll_row.date_selection_mode,
+      'selected_dates', selected_dates_json,
       'created_at', poll_row.created_at,
       'updated_at', poll_row.updated_at
     ),
@@ -435,11 +493,18 @@ begin
 end;
 $$;
 
+drop function if exists public.create_availability_poll(uuid, date, date, text[]);
+drop function if exists public.create_availability_poll(uuid, date, date, text[], smallint[]);
+drop function if exists public.create_availability_poll(uuid, date, date, text[], smallint[], text, date[]);
+
 create or replace function public.create_availability_poll(
   target_event_id uuid,
   poll_date_start date,
   poll_date_end date,
-  player_names text[]
+  player_names text[],
+  poll_allowed_weekdays smallint[],
+  poll_date_selection_mode text,
+  poll_selected_dates date[]
 )
 returns jsonb
 language plpgsql
@@ -448,10 +513,13 @@ set search_path = public
 as $$
 declare
   target_event public.events%rowtype;
-  poll_id uuid;
+  created_poll_id uuid;
   cleaned_names text[];
   player_name text;
   token_value text;
+  normalized_weekdays smallint[];
+  normalized_dates date[];
+  normalized_mode text;
 begin
   select *
   into target_event
@@ -470,8 +538,44 @@ begin
     raise exception 'availability_requires_undecided_date';
   end if;
 
-  if poll_date_start is null or poll_date_end is null or poll_date_start > poll_date_end then
-    raise exception 'invalid_poll_date_range';
+  normalized_mode := coalesce(nullif(btrim(poll_date_selection_mode), ''), 'weekday_range');
+  if normalized_mode not in ('weekday_range', 'selected_dates') then
+    raise exception 'invalid_poll_date_selection_mode';
+  end if;
+
+  if normalized_mode = 'selected_dates' then
+    select array_agg(selected_date order by selected_date)
+    into normalized_dates
+    from (
+      select distinct selected_date
+      from unnest(coalesce(poll_selected_dates, array[]::date[])) as raw(selected_date)
+      where selected_date is not null
+    ) as cleaned_dates;
+
+    if normalized_dates is null or array_length(normalized_dates, 1) < 1 then
+      raise exception 'availability_selected_dates_required';
+    end if;
+
+    if array_length(normalized_dates, 1) > 370 then
+      raise exception 'too_many_availability_dates';
+    end if;
+
+    poll_date_start := normalized_dates[1];
+    poll_date_end := normalized_dates[array_length(normalized_dates, 1)];
+    normalized_weekdays := array[1,2,3,4,5,6,7]::smallint[];
+  else
+    if poll_date_start is null or poll_date_end is null or poll_date_start > poll_date_end then
+      raise exception 'invalid_poll_date_range';
+    end if;
+
+    select array_agg(distinct weekday_value order by weekday_value)
+    into normalized_weekdays
+    from unnest(coalesce(poll_allowed_weekdays, array[1,2,3,4,5,6,7]::smallint[])) as weekday_value
+    where weekday_value between 1 and 7;
+
+    if normalized_weekdays is null or array_length(normalized_weekdays, 1) < 1 then
+      raise exception 'invalid_poll_weekdays';
+    end if;
   end if;
 
   select array_agg(name)
@@ -498,16 +602,22 @@ begin
     raise exception 'availability_player_name_too_long';
   end if;
 
-  insert into public.availability_polls (event_id, owner_user_id, date_start, date_end)
-  values (target_event_id, target_event.owner_user_id, poll_date_start, poll_date_end)
-  returning id into poll_id;
+  insert into public.availability_polls (event_id, owner_user_id, date_start, date_end, allowed_weekdays, date_selection_mode)
+  values (target_event_id, target_event.owner_user_id, poll_date_start, poll_date_end, normalized_weekdays, normalized_mode)
+  returning id into created_poll_id;
+
+  if normalized_mode = 'selected_dates' then
+    insert into public.availability_poll_dates (poll_id, available_date)
+    select created_poll_id, selected_date
+    from unnest(normalized_dates) as selected(selected_date);
+  end if;
 
   foreach player_name in array cleaned_names loop
     loop
       token_value := replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
       begin
         insert into public.availability_players (poll_id, display_name, personal_token)
-        values (poll_id, player_name, token_value);
+        values (created_poll_id, player_name, token_value);
         exit;
       exception
         when unique_violation then
@@ -520,6 +630,31 @@ begin
 exception
   when unique_violation then
     raise exception 'availability_poll_exists';
+end;
+$$;
+
+create or replace function public.create_availability_poll(
+  target_event_id uuid,
+  poll_date_start date,
+  poll_date_end date,
+  player_names text[],
+  poll_allowed_weekdays smallint[]
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return public.create_availability_poll(
+    target_event_id,
+    poll_date_start,
+    poll_date_end,
+    player_names,
+    poll_allowed_weekdays,
+    'weekday_range',
+    null::date[]
+  );
 end;
 $$;
 
@@ -564,6 +699,7 @@ declare
   poll_row public.availability_polls%rowtype;
   target_event public.events%rowtype;
   slots_json jsonb := '[]'::jsonb;
+  selected_dates_json jsonb := '[]'::jsonb;
 begin
   select *
   into player_row
@@ -610,6 +746,11 @@ begin
   from public.availability_slots
   where availability_slots.player_id = player_row.id;
 
+  select coalesce(jsonb_agg(availability_poll_dates.available_date order by availability_poll_dates.available_date), '[]'::jsonb)
+  into selected_dates_json
+  from public.availability_poll_dates
+  where availability_poll_dates.poll_id = poll_row.id;
+
   return jsonb_build_object(
     'event', jsonb_build_object(
       'title', target_event.title,
@@ -623,7 +764,10 @@ begin
     ),
     'poll', jsonb_build_object(
       'date_start', poll_row.date_start,
-      'date_end', poll_row.date_end
+      'date_end', poll_row.date_end,
+      'allowed_weekdays', poll_row.allowed_weekdays,
+      'date_selection_mode', poll_row.date_selection_mode,
+      'selected_dates', selected_dates_json
     ),
     'player', jsonb_build_object(
       'display_name', player_row.display_name,
@@ -705,8 +849,22 @@ begin
       raise exception 'invalid_slot_name';
     end if;
 
-    if slot_date_value < poll_row.date_start or slot_date_value > poll_row.date_end then
-      raise exception 'slot_date_out_of_range';
+    if poll_row.date_selection_mode = 'selected_dates' then
+      if not exists (
+        select 1
+        from public.availability_poll_dates
+        where availability_poll_dates.poll_id = poll_row.id
+          and availability_poll_dates.available_date = slot_date_value
+      ) then
+        raise exception 'slot_date_not_allowed';
+      end if;
+    else
+      if slot_date_value < poll_row.date_start or slot_date_value > poll_row.date_end then
+        raise exception 'slot_date_out_of_range';
+      end if;
+      if extract(isodow from slot_date_value)::smallint <> all(poll_row.allowed_weekdays) then
+        raise exception 'slot_weekday_not_allowed';
+      end if;
     end if;
 
     insert into public.availability_slots (player_id, slot_date, slot)
@@ -724,12 +882,14 @@ $$;
 
 alter table public.admins enable row level security;
 alter table public.gms enable row level security;
+alter table public.app_settings enable row level security;
 alter table public.events enable row level security;
 alter table public.join_requests enable row level security;
 alter table public.event_private_notes enable row level security;
 alter table public.availability_polls enable row level security;
 alter table public.availability_players enable row level security;
 alter table public.availability_slots enable row level security;
+alter table public.availability_poll_dates enable row level security;
 
 do $$
 declare
@@ -773,6 +933,28 @@ on public.gms
 for select
 to anon, authenticated
 using (true);
+
+drop policy if exists "Anyone can read app settings" on public.app_settings;
+create policy "Anyone can read app settings"
+on public.app_settings
+for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "Admins can insert app settings" on public.app_settings;
+create policy "Admins can insert app settings"
+on public.app_settings
+for insert
+to authenticated
+with check (public.is_admin() and id = 'global');
+
+drop policy if exists "Admins can update app settings" on public.app_settings;
+create policy "Admins can update app settings"
+on public.app_settings
+for update
+to authenticated
+using (public.is_admin())
+with check (public.is_admin() and id = 'global');
 
 drop policy if exists "Anyone can read public events" on public.events;
 create policy "Anyone can read public events"
@@ -925,6 +1107,20 @@ using (
   )
 );
 
+drop policy if exists "Staff can read managed availability dates" on public.availability_poll_dates;
+create policy "Staff can read managed availability dates"
+on public.availability_poll_dates
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.availability_polls
+    where availability_polls.id = availability_poll_dates.poll_id
+      and public.can_manage_event(availability_polls.event_id)
+  )
+);
+
 drop policy if exists "Staff can read managed availability slots" on public.availability_slots;
 create policy "Staff can read managed availability slots"
 on public.availability_slots
@@ -949,20 +1145,27 @@ grant select, update, delete on public.join_requests to authenticated;
 grant select, insert, update, delete on public.event_private_notes to authenticated;
 grant select on public.admins to anon, authenticated;
 grant select on public.gms to anon, authenticated;
+grant select on public.app_settings to anon, authenticated;
+grant insert, update on public.app_settings to authenticated;
 grant select on public.availability_polls to authenticated;
 grant select on public.availability_players to authenticated;
 grant select on public.availability_slots to authenticated;
+grant select on public.availability_poll_dates to authenticated;
 revoke all on function public.set_updated_at() from public;
 revoke all on function public.keep_event_owner_user_id() from public;
 revoke all on function public.refresh_event_approved_players(uuid) from public;
 revoke all on function public.refresh_event_approved_players_trigger() from public;
 revoke all on function public.get_availability_poll(uuid) from public;
-revoke all on function public.create_availability_poll(uuid, date, date, text[]) from public;
+revoke all on function public.create_availability_poll(uuid, date, date, text[], smallint[]) from public;
+revoke all on function public.create_availability_poll(uuid, date, date, text[], smallint[], text, date[]) from public;
 revoke all on function public.clear_availability_poll(uuid) from public;
 revoke all on function public.get_player_availability(text) from public;
 revoke all on function public.submit_player_availability(text, jsonb) from public;
 grant execute on function public.get_availability_poll(uuid) to authenticated;
-grant execute on function public.create_availability_poll(uuid, date, date, text[]) to authenticated;
+grant execute on function public.create_availability_poll(uuid, date, date, text[], smallint[]) to authenticated;
+grant execute on function public.create_availability_poll(uuid, date, date, text[], smallint[], text, date[]) to authenticated;
 grant execute on function public.clear_availability_poll(uuid) to authenticated;
 grant execute on function public.get_player_availability(text) to anon, authenticated;
 grant execute on function public.submit_player_availability(text, jsonb) to anon, authenticated;
+
+notify pgrst, 'reload schema';
