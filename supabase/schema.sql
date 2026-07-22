@@ -1137,20 +1137,23 @@ using (
   )
 );
 
-grant usage on schema public to anon, authenticated;
-grant select on public.events to anon, authenticated;
+grant usage on schema public to anon, authenticated, service_role;
+grant select on public.events to anon, authenticated, service_role;
 grant insert on public.join_requests to anon, authenticated;
 grant select, insert, update, delete on public.events to authenticated;
 grant select, update, delete on public.join_requests to authenticated;
 grant select, insert, update, delete on public.event_private_notes to authenticated;
 grant select on public.admins to anon, authenticated;
 grant select on public.gms to anon, authenticated;
-grant select on public.app_settings to anon, authenticated;
+grant select on public.app_settings to anon, authenticated, service_role;
 grant insert, update on public.app_settings to authenticated;
 grant select on public.availability_polls to authenticated;
 grant select on public.availability_players to authenticated;
 grant select on public.availability_slots to authenticated;
 grant select on public.availability_poll_dates to authenticated;
+
+grant select on public.join_requests to authenticated, service_role;
+
 revoke all on function public.set_updated_at() from public;
 revoke all on function public.keep_event_owner_user_id() from public;
 revoke all on function public.refresh_event_approved_players(uuid) from public;
