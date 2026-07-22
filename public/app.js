@@ -286,7 +286,7 @@ async function init() {
       }
     });
   } else {
-    showStatus("尚未連接 Supabase，現在顯示本機示範資料。部署前請設定 SUPABASE_URL 與 SUPABASE_ANON_KEY。");
+    showStatus("尚未連接 Supabase，現在顯示本機示範資料。部署前請設定 SUPABASE_URL 與 SUPABASE_PUBLISHABLE_KEY。");
   }
 
   await loadData();

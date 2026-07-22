@@ -3,12 +3,12 @@ import { resolve } from "node:path";
 
 const configPath = resolve("public", "config.js");
 const url = process.env.SUPABASE_URL ?? "";
-const anonKey = process.env.SUPABASE_ANON_KEY ?? "";
+const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? "";
 
 const config = `window.TRPG_KA_CONFIG = ${JSON.stringify(
   {
     supabaseUrl: url,
-    supabaseAnonKey: anonKey
+    supabaseAnonKey: publishableKey
   },
   null,
   2

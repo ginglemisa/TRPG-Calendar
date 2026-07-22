@@ -116,7 +116,7 @@ npm run check
 在 Supabase 建立新的 project，記下：
 
 - Project URL
-- anon public key
+- Publishable key（`sb_publishable_...`；舊專案可暫時使用 anon public key）
 
 這兩個值會在 Vercel 部署時用到。
 
@@ -289,6 +289,8 @@ npx supabase secrets set GM_REQUEST_TO="admin@example.com"
 npx supabase functions deploy join-request-notify
 ```
 
+此 Function 會優先讀取 Supabase 新 API key 架構提供的 `SUPABASE_SECRET_KEYS` JSON 物件中的 `default` secret key；若尚未遷移，仍會 fallback 到舊的 `SUPABASE_SERVICE_ROLE_KEY`。
+
 ## Vercel 部署
 
 ### 環境變數
@@ -297,10 +299,10 @@ npx supabase functions deploy join-request-notify
 
 ```text
 SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_ANON_KEY=your-public-anon-key
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 ```
 
-`SUPABASE_ANON_KEY` 會被前端載入，屬於公開 key。安全性必須由 Supabase RLS policy、RPC 權限與 Edge Function secret 管理。
+`SUPABASE_PUBLISHABLE_KEY` 會被前端載入，屬於公開 key；舊的 `SUPABASE_ANON_KEY` 仍可作為相容 fallback，但建議依 Supabase 新 API keys 指引改用 publishable key。安全性必須由 Supabase RLS policy、RPC 權限與 Edge Function secret 管理。
 
 ### 建置指令
 
@@ -316,7 +318,7 @@ node scripts/build-config.mjs
 public/config.js
 ```
 
-讓前端知道 Supabase URL 與 anon key。
+讓前端知道 Supabase URL 與 publishable key（或相容 fallback 的 anon key）。
 
 ### 部署後檢查
 
@@ -376,9 +378,9 @@ public/config.js
 5. Site URL 與 Redirect URLs 是否正確。
 6. 若使用 custom SMTP，檢查 SMTP / Resend / DNS 驗證狀態。
 
-### anon key 放在前端安全嗎？
+### publishable key 放在前端安全嗎？
 
-anon key 是公開前端 key，可以放在瀏覽器端。資料安全不能依賴隱藏 anon key，而是依賴 RLS policy、資料庫 grant、RPC 權限與 Edge Function secrets。
+publishable key 是 Supabase 新 API key 架構下給瀏覽器、手機與桌面 app 使用的公開前端 key；舊的 anon key 也屬於公開前端 key，但 Supabase 已建議改用 `sb_publishable_...`。資料安全不能依賴隱藏前端 key，而是依賴 RLS policy、資料庫 grant、RPC 權限與 Edge Function secrets。
 
 ### 什麼情況需要重跑 `supabase/schema.sql`？
 

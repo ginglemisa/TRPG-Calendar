@@ -4,13 +4,44 @@ const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const RESEND_FROM_EMAIL = Deno.env.get("RESEND_FROM_EMAIL") ?? "";
 const ADMIN_NOTIFY_EMAIL = Deno.env.get("ADMIN_NOTIFY_EMAIL") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const { key: SUPABASE_SECRET_KEY, source: SUPABASE_SECRET_KEY_SOURCE } = getSupabaseSecretKey();
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
+
+function getSupabaseSecretKey() {
+  const secretKeysJson = Deno.env.get("SUPABASE_SECRET_KEYS") ?? "";
+
+  if (!secretKeysJson) {
+    console.warn("[join-request-notify] SUPABASE_SECRET_KEYS is not configured; falling back to SUPABASE_SERVICE_ROLE_KEY");
+  } else {
+    try {
+      const secretKeys = JSON.parse(secretKeysJson) as Record<string, unknown>;
+      const defaultSecretKey = secretKeys.default;
+      if (typeof defaultSecretKey === "string" && defaultSecretKey.trim()) {
+        return {
+          key: defaultSecretKey,
+          source: "SUPABASE_SECRET_KEYS.default"
+        };
+      }
+
+      console.warn("[join-request-notify] SUPABASE_SECRET_KEYS.default is missing or invalid; falling back to SUPABASE_SERVICE_ROLE_KEY");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown JSON parse error";
+      console.error("[join-request-notify] SUPABASE_SECRET_KEYS JSON parse failed; falling back to SUPABASE_SERVICE_ROLE_KEY", {
+        message
+      });
+    }
+  }
+
+  return {
+    key: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+    source: "SUPABASE_SERVICE_ROLE_KEY"
+  };
+}
 
 type NotifyPayload = {
   requestId?: unknown;
@@ -30,7 +61,7 @@ Deno.serve(async (request) => {
     ["RESEND_FROM_EMAIL", RESEND_FROM_EMAIL],
     ["ADMIN_NOTIFY_EMAIL", ADMIN_NOTIFY_EMAIL],
     ["SUPABASE_URL", SUPABASE_URL],
-    ["SUPABASE_SERVICE_ROLE_KEY", SUPABASE_SERVICE_ROLE_KEY]
+    ["SUPABASE_SECRET_KEYS.default or SUPABASE_SERVICE_ROLE_KEY", SUPABASE_SECRET_KEY]
   ].filter(([, value]) => !value).map(([name]) => name);
 
   if (missingSecrets.length) {
@@ -50,8 +81,12 @@ Deno.serve(async (request) => {
     return jsonResponse({ ok: false, message: "request_not_found" }, 400);
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
     auth: { persistSession: false }
+  });
+
+  console.log("[join-request-notify] admin key selected", {
+    source: SUPABASE_SECRET_KEY_SOURCE
   });
 
   const { data: appSettings, error: settingsError } = await supabase
@@ -61,9 +96,17 @@ Deno.serve(async (request) => {
     .maybeSingle();
 
   if (settingsError) {
+    console.error("[join-request-notify] admin key verification failed", {
+      source: SUPABASE_SECRET_KEY_SOURCE,
+      message: settingsError.message
+    });
     console.error("join-request-notify settings lookup failed", settingsError);
     return jsonResponse({ ok: false, message: "notification_settings_unavailable" }, 500);
   }
+
+  console.log("[join-request-notify] admin key verification succeeded", {
+    source: SUPABASE_SECRET_KEY_SOURCE
+  });
 
   if (appSettings?.notify_join_requests !== true) {
     return jsonResponse({ ok: true, skipped: true }, 200);
