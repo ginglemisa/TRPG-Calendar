@@ -267,9 +267,9 @@ npx supabase functions deploy gm-account-request
 設定必要 secrets：
 
 ```bash
-npx supabase secrets set RESEND_API_KEY="re_xxx"
-npx supabase secrets set RESEND_FROM="TRPG Calendar <noreply@example.com>"
-npx supabase secrets set GM_REQUEST_TO="admin@example.com"
+npx supabase secrets set RESEND_API_KEY="填上 RESEND API KEY"
+npx supabase secrets set RESEND_FROM_EMAIL="先用 onboarding@resend.dev"
+npx supabase secrets set ADMIN_NOTIFY_EMAIL="填上註冊 RESEND 的 E-mail"
 ```
 
 建議 `RESEND_FROM` 使用已在 Resend 驗證的網域。若寄信失敗，先檢查 Resend API key、寄件網域、寄件地址與 Supabase Edge Function logs。
@@ -279,7 +279,7 @@ npx supabase secrets set GM_REQUEST_TO="admin@example.com"
 玩家加團申請通知預設關閉。若要啟用：
 
 1. 確認已部署 `join-request-notify` Edge Function。
-2. 確認 Resend secrets 已設定。
+2. 確認 Resend 三個 secrets 已設定。
 3. 登入 admin 帳號。
 4. 在側欄「通知設定」打開「玩家申請時寄信通知站方」。
 
