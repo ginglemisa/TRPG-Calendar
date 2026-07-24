@@ -1,0 +1,9 @@
+# Both endpoints are intentionally callable by visitors: one accepts GM-account
+# requests and the other is called immediately after a guest submits a join
+# request.  The legacy platform JWT check cannot validate sb_publishable_ keys;
+# the handlers validate their inputs and never return protected database data.
+[functions.gm-account-request]
+verify_jwt = false
+
+[functions.join-request-notify]
+verify_jwt = false

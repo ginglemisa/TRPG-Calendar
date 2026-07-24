@@ -1137,6 +1137,39 @@ using (
   )
 );
 
+-- API keys authenticate an application, then Supabase maps the request to a
+-- database role.  A new sb_secret_ key maps to service_role (and bypasses RLS),
+-- so the notification Edge Function needs these explicit read grants.  It must
+-- never be used by browser code.
+--
+-- Revoke first so re-running this schema removes legacy/default grants rather
+-- than leaving broader permissions behind.  RLS still applies to anon and
+-- authenticated after a grant succeeds; service_role intentionally bypasses it.
+revoke all on schema public from public, anon, authenticated, service_role;
+revoke all on table public.admins,
+  public.gms,
+  public.app_settings,
+  public.events,
+  public.join_requests,
+  public.event_private_notes,
+  public.availability_polls,
+  public.availability_players,
+  public.availability_slots,
+  public.availability_poll_dates
+from public, anon, authenticated, service_role;
+
+-- Future objects created by the role running this schema should require a
+-- deliberate grant and RLS policy before they are exposed.  Function EXECUTE
+-- is a global PUBLIC default in PostgreSQL, so that revoke must be global.
+alter default privileges in schema public
+  revoke all on tables from public, anon, authenticated, service_role;
+alter default privileges in schema public
+  revoke all on sequences from public, anon, authenticated, service_role;
+alter default privileges
+  revoke execute on functions from public;
+alter default privileges in schema public
+  revoke execute on functions from anon, authenticated, service_role;
+
 grant usage on schema public to anon, authenticated, service_role;
 grant select on public.events to anon, authenticated, service_role;
 grant insert on public.join_requests to anon, authenticated;
@@ -1152,12 +1185,18 @@ grant select on public.availability_players to authenticated;
 grant select on public.availability_slots to authenticated;
 grant select on public.availability_poll_dates to authenticated;
 
+-- Only join-request-notify uses the secret key.  It reads the request, its
+-- event, and the notification setting; no service_role write grant is needed.
 grant select on public.join_requests to authenticated, service_role;
 
 revoke all on function public.set_updated_at() from public;
 revoke all on function public.keep_event_owner_user_id() from public;
 revoke all on function public.refresh_event_approved_players(uuid) from public;
 revoke all on function public.refresh_event_approved_players_trigger() from public;
+revoke all on function public.is_admin() from public;
+revoke all on function public.is_gm() from public;
+revoke all on function public.is_staff() from public;
+revoke all on function public.can_manage_event(uuid) from public;
 revoke all on function public.get_availability_poll(uuid) from public;
 revoke all on function public.create_availability_poll(uuid, date, date, text[], smallint[]) from public;
 revoke all on function public.create_availability_poll(uuid, date, date, text[], smallint[], text, date[]) from public;
@@ -1170,5 +1209,11 @@ grant execute on function public.create_availability_poll(uuid, date, date, text
 grant execute on function public.clear_availability_poll(uuid) to authenticated;
 grant execute on function public.get_player_availability(text) to anon, authenticated;
 grant execute on function public.submit_player_availability(text, jsonb) to anon, authenticated;
+-- These SECURITY DEFINER helpers are used by authenticated RLS policies and
+-- RPCs.  Do not leave them callable by PUBLIC.
+grant execute on function public.is_admin() to authenticated;
+grant execute on function public.is_gm() to authenticated;
+grant execute on function public.is_staff() to authenticated;
+grant execute on function public.can_manage_event(uuid) to authenticated;
 
 notify pgrst, 'reload schema';

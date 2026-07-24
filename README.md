@@ -291,6 +291,8 @@ npx supabase functions deploy join-request-notify
 
 此 Function 會優先讀取 Supabase 新 API key 架構提供的 `SUPABASE_SECRET_KEYS` JSON 物件中的 `default` secret key；若尚未遷移，仍會 fallback 到舊的 `SUPABASE_SERVICE_ROLE_KEY`。
 
+專案中的 `supabase/config.toml` 已將兩個公開表單使用的 Function 設為 `verify_jwt = false`。這是因為訪客沒有登入 JWT，而新的 `sb_publishable_...` key 也不是 JWT；它不會放寬資料表的 RLS。兩個端點仍是公開入口，請保留前端 honeypot，並在正式站監看異常寄信量／必要時在網站前方加上 WAF 或 rate limit。
+
 ## Vercel 部署
 
 ### 環境變數
@@ -303,6 +305,8 @@ SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 ```
 
 `SUPABASE_PUBLISHABLE_KEY` 會被前端載入，屬於公開 key；舊的 `SUPABASE_ANON_KEY` 仍可作為相容 fallback，但建議依 Supabase 新 API keys 指引改用 publishable key。安全性必須由 Supabase RLS policy、RPC 權限與 Edge Function secret 管理。
+
+Edge Function 的新 key 不需要手動寫進 Vercel 或程式碼。Supabase 會在 Function 環境提供 `SUPABASE_SECRET_KEYS`；本專案只在 `join-request-notify` 讀取其 `default` key。新的 Secret key 在資料庫端使用 `service_role`，因此 schema 只授與它讀取通知流程所需的 `events`、`join_requests` 與 `app_settings`，不授與寫入權限。
 
 ### 建置指令
 
@@ -354,6 +358,8 @@ public/config.js
 - 管理員可管理全部團務與申請。
 - 玩家可跑團時間連結使用不可猜測 token，只能讀取與覆寫該玩家自己的可跑時段。
 - service role key 不受 RLS 限制，必須只存在於可信任環境。
+- 新的 Secret key 也會以 `service_role` 執行並繞過 RLS；它不是 Publishable key 的替代品，絕不能放入 `public/`、Vercel 前端環境變數或瀏覽器。
+- `schema.sql` 先撤銷三個 Data API role 的既有 table/function 權限，再依需求重新授與；未來新增資料表或 RPC 時，必須同時新增最小化的 grant 與 RLS policy。
 
 ### 更新 schema
 
